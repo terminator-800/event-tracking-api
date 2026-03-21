@@ -1,10 +1,12 @@
 import app from "./app";
 import { env } from "./config/env";
 import { testDatabaseConnection } from "./config/db";
+import { createTables } from "./models/index";
 
 async function startServer(): Promise<void> {
   try {
     await testDatabaseConnection();
+    await createTables();
     console.log("MySQL connected successfully");
 
     app.listen(env.port, () => {
