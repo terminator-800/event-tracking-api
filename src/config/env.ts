@@ -16,5 +16,7 @@ export const env = {
   dbPort: Number(process.env.DB_PORT),
   dbUser: process.env.DB_USER as string,
   dbPassword: process.env.DB_PASSWORD || "",
-  dbName: process.env.DB_NAME as string
+  dbName: process.env.DB_NAME as string,
+  adminUsername: process.env.ADMIN_USERNAME as string,
+  adminPassword: process.env.ADMIN_PASSWORD as string,
 };

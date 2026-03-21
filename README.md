@@ -4,7 +4,7 @@ Node.js + Express + MySQL starter setup using TypeScript.
 
 ## 1) Setup
 
-1. Copy `.env.example` to `.env`
+1. Copy `.env` to `.env`
 2. Update DB credentials in `.env`
 3. Install dependencies:
 
@@ -28,3 +28,11 @@ npm start
 ## 4) Test endpoint
 
 - `GET /health`
+
+
+## 5) Seed Admin
+
+```bash
+npm run seed:admin
+
+
