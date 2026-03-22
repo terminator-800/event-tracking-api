@@ -1,5 +1,5 @@
 import { pool } from "../config/db";
-import { UserQueries } from "../queries/users.queries";
+import { UserQueries } from "./queries/users.queries";
 
 export class UserRepository {
     async insertAdmin(

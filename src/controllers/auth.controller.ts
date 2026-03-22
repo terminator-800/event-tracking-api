@@ -1,11 +1,7 @@
 import { Request, Response } from "express";
-import bcrypt from "bcrypt";
-import jwt from "jsonwebtoken";
-import { UserRepository } from "../repositories/users.repository";
 import { validateRequiredFields } from '../utils/validate'
-import { env } from "../config/env";
+import { verifyUserCredentials, generateAuthToken, setAuthCookie } from './services/auth.service'
 
-const userRepository = new UserRepository();
 
 export class AuthController {
     
@@ -14,32 +10,15 @@ export class AuthController {
 
     if (!validateRequiredFields({ username, password }, res)) return;
 
-    const user = await userRepository.findByUsername(username);
-
+    const user = await verifyUserCredentials(username, password);
+    
     if (!user) {
-      res.status(401).json({ message: "Invalid username or password" });
+        res.status(401).json({ message: "Invalid username or password" });
       return;
     }
 
-    const match = await bcrypt.compare(password, user.password);
-
-    if (!match) {
-      res.status(401).json({ message: "Invalid username or password" });
-      return;
-    }
-
-    const token = jwt.sign(
-      { id: user.id, username: user.username, role: user.role },
-      env.jwtSecret,
-      { expiresIn: "7d" }
-    );
-
-    res.cookie("token", token, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === "production",
-      sameSite: "lax",
-      maxAge: 7 * 24 * 60 * 60 * 1000,
-    });
+    const token = generateAuthToken(user);
+    setAuthCookie(res, token);
 
     res.status(200).json({
       message: "Login successful",

@@ -1,5 +1,6 @@
 import { Response } from "express";
 
+// validates all required fields
 export function validateRequiredFields(
   fields: Record<string, any>,
   res: Response
