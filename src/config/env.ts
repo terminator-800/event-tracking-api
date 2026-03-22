@@ -19,4 +19,6 @@ export const env = {
   dbName: process.env.DB_NAME as string,
   adminUsername: process.env.ADMIN_USERNAME as string,
   adminPassword: process.env.ADMIN_PASSWORD as string,
+  jwtSecret: process.env.JWT_SECRET as string,
+  // jwtExpiresIn: process.env.JWT_EXPIRES_IN || "7d",
 };
