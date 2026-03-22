@@ -1,5 +1,4 @@
 import bcrypt from "bcrypt";
-import { pool } from "../config/db";
 import { env } from "../config/env"
 import { UserRepository } from "../repositories/users.repository";
 
