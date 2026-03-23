@@ -1,9 +1,23 @@
-declare namespace Express {
-  interface Request {
-    user?: {
-      id: number;
-      username: string;
-      role: "admin" | "user";
-    };
+// types/express.ts
+export type Role =
+  | "admin"
+  | "csg_president"
+  | "it_governor"
+  | "cba_governor"
+  | "ceas_governor"
+  | "coc_governor"
+  | "chm_governor";
+
+declare global {
+  namespace Express {
+    interface Request {
+      user?: {
+        id: number;
+        username: string;
+        role: Role;
+      };
+    }
   }
 }
+
+export {};

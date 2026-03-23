@@ -10,11 +10,11 @@ SET FOREIGN_KEY_CHECKS=0;
 -- 1. INSERT DEPARTMENTS
 -- ============================================================
 INSERT IGNORE INTO departments (name, code) VALUES
-('College of Teacher Education', 'CEAS'),
-('College of Information Technology', 'BSIT'),
-('College of Criminology', 'BSCRIM'),
-('College of Hospitality Management', 'BSHM'),
-('College of Business Administration', 'BSBA');
+('College of Education, Arts and Sciences', 'CEAS'),
+('College of Information Technology', 'CIT'),
+('College of Criminology', 'COC'),
+('College of Hospitality Management', 'CHM'),
+('College of Business Administration', 'CBA');
 
 -- ============================================================
 -- 2. INSERT PROGRAMS
@@ -24,12 +24,12 @@ INSERT INTO programs (course_code, course_name, major, department_id) VALUES
 ('BSED', 'Bachelor of Secondary Education Major in English', 'English', (SELECT id FROM departments WHERE code = 'CEAS')),
 ('BSED', 'Bachelor of Secondary Education Major in Math', 'Math', (SELECT id FROM departments WHERE code = 'CEAS')),
 ('BSED', 'Bachelor of Secondary Education Major in Filipino', 'Filipino', (SELECT id FROM departments WHERE code = 'CEAS')),
-('BSIT', 'Bachelor of Science in Information Technology', '', (SELECT id FROM departments WHERE code = 'BSIT')),
-('BSCRIM', 'Bachelor of Science in Criminology', '', (SELECT id FROM departments WHERE code = 'BSCRIM')),
-('BSHM', 'Bachelor of Science in Hospitality Management', '', (SELECT id FROM departments WHERE code = 'BSHM')),
-('BSBA', 'BSBA Marketing Management', 'Marketing Management', (SELECT id FROM departments WHERE code = 'BSBA')),
-('BSBA', 'BSBA Human Resource Development Management', 'Human Resource Development Management', (SELECT id FROM departments WHERE code = 'BSBA')),
-('BSBA', 'BSBA Financial Management', 'Financial Management', (SELECT id FROM departments WHERE code = 'BSBA'));
+('BSIT', 'Bachelor of Science in Information Technology', '', (SELECT id FROM departments WHERE code = 'CIT')),
+('BSCRIM', 'Bachelor of Science in Criminology', '', (SELECT id FROM departments WHERE code = 'COC')),
+('BSHM', 'Bachelor of Science in Hospitality Management', '', (SELECT id FROM departments WHERE code = 'CHM')),
+('BSBA', 'BSBA Marketing Management', 'Marketing Management', (SELECT id FROM departments WHERE code = 'CBA')),
+('BSBA', 'BSBA Human Resource Development Management', 'Human Resource Development Management', (SELECT id FROM departments WHERE code = 'CBA')),
+('BSBA', 'BSBA Financial Management', 'Financial Management', (SELECT id FROM departments WHERE code = 'CBA'));
 
 -- ============================================================
 -- 3. INSERT STUDENTS (2854)

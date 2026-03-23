@@ -52,3 +52,33 @@ export async function createStudentsTable(): Promise<void> {
     )
   `);
 }
+
+export async function createUsersTable(): Promise<void> {
+  await pool.execute(`
+    CREATE TABLE IF NOT EXISTS users (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      username VARCHAR(100) NOT NULL UNIQUE,
+      password VARCHAR(255) NOT NULL,
+        role ENUM(
+        'admin',
+        'csg_president',
+        'it_governor',
+        'cba_governor',
+        'ceas_governor',
+        'coc_governor',
+        'chm_governor'
+      ) NOT NULL DEFAULT 'csg_president',
+
+      student_id INT,                
+      department_id INT,             
+      program_id INT,                
+
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+
+      FOREIGN KEY (student_id) REFERENCES students(id) ON DELETE CASCADE,
+      FOREIGN KEY (department_id) REFERENCES departments(id) ON DELETE RESTRICT,
+      FOREIGN KEY (program_id) REFERENCES programs(id) ON DELETE RESTRICT
+    )
+  `);
+}

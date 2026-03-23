@@ -6,14 +6,15 @@ import { verifyUserCredentials, generateAuthToken, setAuthCookie } from './servi
 export class AuthController {
     
    async login(req: Request, res: Response): Promise<void> {
+  try {
     const { username, password } = req.body;
 
     if (!validateRequiredFields({ username, password }, res)) return;
 
     const user = await verifyUserCredentials(username, password);
-    
+
     if (!user) {
-        res.status(401).json({ message: "Invalid username or password" });
+      res.status(401).json({ message: "Invalid username or password" });
       return;
     }
 
@@ -22,13 +23,12 @@ export class AuthController {
 
     res.status(200).json({
       message: "Login successful",
-      user: {
-        id: user.id,
-        username: user.username,
-        role: user.role,
-      },
     });
+  } catch (error) {
+    console.error("Error logging in:", error);
+    res.status(500).json({ message: "Internal server error." });
   }
+}
 
   async logout(_req: Request, res: Response): Promise<void> {
     res.clearCookie("token");

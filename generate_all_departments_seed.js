@@ -41,11 +41,11 @@ function parseCSV(content) {
 // 2️⃣ Configuration for CSVs
 // ---------------------------
 const csvFiles = [
-  { file: 'CEAS.csv', deptCode: 'CEAS', deptName: 'College of Teacher Education' },
-  { file: 'BSIT.csv', deptCode: 'BSIT', deptName: 'College of Information Technology' },
-  { file: 'BSCRIM.csv', deptCode: 'BSCRIM', deptName: 'College of Criminology' },
-  { file: 'HM.csv', deptCode: 'BSHM', deptName: 'College of Hospitality Management' },
-  { file: 'BSBA.csv', deptCode: 'BSBA', deptName: 'College of Business Administration' },
+  { file: 'CEAS.csv', deptCode: 'CEAS', deptName: 'College of Education, Arts and Sciences'},
+  { file: 'BSIT.csv', deptCode: 'CIT', deptName: 'College of Information Technology' },
+  { file: 'BSCRIM.csv', deptCode: 'COC', deptName: 'College of Criminology' },
+  { file: 'HM.csv', deptCode: 'CHM', deptName: 'College of Hospitality Management' },
+  { file: 'BSBA.csv', deptCode: 'CBA', deptName: 'College of Business Administration' },
 ];
 
 const allRecords = [];
