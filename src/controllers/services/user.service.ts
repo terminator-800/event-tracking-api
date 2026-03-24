@@ -1,5 +1,3 @@
-// controllers/services/user.service.ts
-
 import { pool } from "../../config/db";
 import { Role } from "../../types/express";
 import bcrypt from "bcrypt";

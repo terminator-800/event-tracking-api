@@ -82,3 +82,42 @@ export async function createUsersTable(): Promise<void> {
     )
   `);
 }
+
+export async function createEventAudiencesTable(): Promise<void> {
+  await pool.execute(`
+    CREATE TABLE IF NOT EXISTS event_audiences (
+      id            INT AUTO_INCREMENT PRIMARY KEY,
+      event_id      INT NOT NULL,
+      department_id INT,               -- NULL = all departments (legacy, prefer is_all_departments)
+      program_id    INT,               -- NULL = all programs in the department
+      year_level    INT NULL,          -- NULL = all year levels
+      FOREIGN KEY (event_id)      REFERENCES events(id)      ON DELETE CASCADE,
+      FOREIGN KEY (department_id) REFERENCES departments(id) ON DELETE CASCADE,
+      FOREIGN KEY (program_id)    REFERENCES programs(id)    ON DELETE CASCADE
+    );
+  `);
+}
+
+export async function createEventsTable(): Promise<void> {
+  await pool.execute(`
+    CREATE TABLE IF NOT EXISTS events (
+      id                  INT AUTO_INCREMENT PRIMARY KEY,
+      name                VARCHAR(255) NOT NULL,
+      date                DATE         NOT NULL,
+      venue               VARCHAR(255) NOT NULL,
+      duration            ENUM('Whole Day','Half Day','AM Only','PM Only') NOT NULL DEFAULT 'Whole Day',
+      am_time_in          TIME,
+      am_time_out         TIME,
+      pm_time_in          TIME,
+      pm_time_out         TIME,
+      is_mandatory        BOOLEAN      NOT NULL DEFAULT FALSE,
+      is_all_departments  BOOLEAN      NOT NULL DEFAULT FALSE,
+      status              ENUM('Upcoming','Ongoing','Completed','Cancelled') NOT NULL DEFAULT 'Upcoming',
+      audience_notes      TEXT,
+      created_by          INT NOT NULL,
+      created_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      updated_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE RESTRICT
+    );
+  `);
+}
