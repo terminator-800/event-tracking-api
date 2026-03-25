@@ -16,6 +16,7 @@ export async function createEventsTable(): Promise<void> {
       is_all_departments  BOOLEAN      NOT NULL DEFAULT FALSE,
       status              ENUM('Upcoming','Ongoing','Completed','Cancelled') NOT NULL DEFAULT 'Upcoming',
       audience_notes      TEXT,
+      fine_amount         DECIMAL(10,2) NOT NULL DEFAULT 0,
       created_by          INT NOT NULL,
       created_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
       updated_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,

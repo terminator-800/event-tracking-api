@@ -1,24 +1,8 @@
 import { Request, Response } from "express";
 import { pool } from "../config/db";
 import { ResultSetHeader } from "mysql2";
-
-function to24Hour(time: string | null | undefined): string | null {
-  if (!time) return null;
-
-  const [timePart, meridiem] = time.trim().split(" ");
-  let [h, m] = timePart.split(":").map(Number);
-
-  if (meridiem?.toUpperCase() === "PM" && h !== 12) h += 12;
-  if (meridiem?.toUpperCase() === "AM" && h === 12) h = 0;
-
-  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:00`;
-}
-
-function parseYearLevel(yearLevel: string | null | undefined): number | null {
-  if (!yearLevel || yearLevel === "All Year Levels") return null;
-  const match = yearLevel.match(/\d+/);
-  return match ? parseInt(match[0], 10) : null;
-}
+import { to24Hour, parseYearLevel } from "../controllers/services/event.service";
+import { Role } from "../types/express";
 
 interface CreateEventBody {
   name: string;
@@ -36,6 +20,7 @@ interface CreateEventBody {
   programId?: number;
   yearLevel?: string;
   major?: string;
+  fineAmount?: number;
 }
 
 export class EventController {
@@ -63,6 +48,7 @@ export class EventController {
       course_code,
       programId,
       yearLevel,
+      fineAmount,
     }: CreateEventBody = req.body;
 
     if (!name || !date || !venue || !duration || !status) {
@@ -89,8 +75,8 @@ export class EventController {
           am_time_in, am_time_out,
           pm_time_in, pm_time_out,
           is_mandatory, is_all_departments,
-          status, audience_notes, created_by
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          status, audience_notes, fine_amount, created_by
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           name, date, venue, duration,
           amIn, amOut, pmIn, pmOut,
@@ -98,6 +84,7 @@ export class EventController {
           isAllDepartments ? 1 : 0,
           status,
           audienceNotes || null,
+          fineAmount ?? 0,
           createdBy,
         ]
       );
@@ -143,6 +130,84 @@ export class EventController {
       res.status(500).json({ message: "Internal server error." });
     } finally {
       connection.release();
+    }
+  }
+
+  async getEvents(req: Request, res: Response): Promise<void> {
+    const userId   = req.user?.id!;
+    const userRole = req.user?.role!;
+  
+    if (!userId) {
+      res.status(401).json({ message: "Unauthorized" });
+      return;
+    }
+  
+    const adminRoles: Role[] = ["admin","csg_president","it_governor","cba_governor","ceas_governor", "coc_governor", "chm_governor"];
+  
+    try {
+      let events: any[] = [];
+  
+      if (adminRoles.includes(userRole)) {
+        const [rows]: any = await pool.execute(
+          `SELECT
+            e.*,
+            u.username AS created_by_username,
+            JSON_ARRAYAGG(
+              JSON_OBJECT(
+                'department_id', ea.department_id,
+                'program_id',    ea.program_id,
+                'year_level',    ea.year_level
+              )
+            ) AS audiences
+          FROM events e
+          LEFT JOIN users u  ON u.id  = e.created_by
+          LEFT JOIN event_audiences ea ON ea.event_id = e.id
+          GROUP BY e.id
+          ORDER BY e.date DESC`
+        );
+        events = rows;
+  
+      } else {
+        const [userRows]: any = await pool.execute(
+          `SELECT department_id FROM users WHERE id = ? LIMIT 1`,
+          [userId]
+        );
+  
+        if (!userRows.length || !userRows[0].department_id) {
+          res.status(403).json({ message: "User has no associated department." });
+          return;
+        }
+  
+        const departmentId = userRows[0].department_id;
+  
+        const [rows]: any = await pool.execute(
+          `SELECT
+            e.*,
+            u.username AS created_by_username,
+            JSON_ARRAYAGG(
+              JSON_OBJECT(
+                'department_id', ea.department_id,
+                'program_id',    ea.program_id,
+                'year_level',    ea.year_level
+              )
+            ) AS audiences
+          FROM events e
+          LEFT JOIN users u  ON u.id  = e.created_by
+          LEFT JOIN event_audiences ea ON ea.event_id = e.id
+          WHERE e.is_all_departments = 1
+            OR ea.department_id = ?
+          GROUP BY e.id
+          ORDER BY e.date DESC`,
+          [departmentId]
+        );
+        events = rows;
+      }
+      console.log("events:", events);
+      res.status(200).json({ events });
+  
+    } catch (error) {
+      console.error("[getEvents] Error:", error);
+      res.status(500).json({ message: "Internal server error." });
     }
   }
 }
