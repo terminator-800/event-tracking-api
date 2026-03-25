@@ -109,7 +109,7 @@ export class EventController {
         console.log("looking up department code:", course_code);
 
         const [deptRows]: any = await connection.execute(
-          `SELECT id FROM programs WHERE course_code = ? LIMIT 1`,
+          `SELECT id, department_id FROM programs WHERE course_code = ? LIMIT 1`,
           [course_code]
         );
         console.log("deptRows:", deptRows);
@@ -121,14 +121,14 @@ export class EventController {
           return;
         }
 
-        const resolvedDepartmentId = deptRows[0].id;
-        console.log("resolved department id:", resolvedDepartmentId);
+        const resolvedProgramId = deptRows[0].id;
+        const resolvedDepartmentId = deptRows[0].department_id;
 
         console.log("inserting event_audiences...");
         await connection.execute(
           `INSERT INTO event_audiences (event_id, department_id, program_id, year_level)
            VALUES (?, ?, ?, ?)`,
-          [eventId, resolvedDepartmentId, programId ?? null, parseYearLevel(yearLevel)]
+          [eventId, resolvedDepartmentId, resolvedProgramId, parseYearLevel(yearLevel)]
         );
         console.log("event_audiences inserted");
       }
