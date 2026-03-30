@@ -37,6 +37,9 @@ export class EventController {
       return;
     }
 
+    const userRole = req.user?.role;
+    const userDepartmentId = req.user?.department_id ?? null;
+
     const {
       name,
       date,
@@ -66,6 +69,19 @@ export class EventController {
 
     const isAllDepartments = course_code === "All Departments";
 
+    // Non-admin users (e.g. governors) may only create events for their own department.
+    // Defense-in-depth: the route already restricts roles, but we enforce department match here too.
+    if (userRole !== "admin") {
+      if (isAllDepartments) {
+        res.status(403).json({ message: "Access denied for creating all-departments events." });
+        return;
+      }
+      if (!userDepartmentId) {
+        res.status(403).json({ message: "Access denied: user has no associated department." });
+        return;
+      }
+    }
+
     const amIn  = to24Hour(amTimeIn);
     const amOut = to24Hour(amTimeOut);
     const pmIn  = to24Hour(pmTimeIn);
@@ -76,6 +92,33 @@ export class EventController {
     const graceAmOut = Math.max(0, Math.floor(am_grace_out ?? 0));
     const gracePmIn  = Math.max(0, Math.floor(pm_grace_in  ?? 0));
     const gracePmOut = Math.max(0, Math.floor(pm_grace_out ?? 0));
+
+    // Resolve department/program from course_code up-front so we can authorize before inserting anything.
+    let resolvedProgramId: number | null = null;
+    let resolvedDepartmentId: number | null = null;
+
+    if (!isAllDepartments) {
+      const [deptRows]: any = await pool.execute(
+        `SELECT id, department_id FROM programs WHERE course_code = ? LIMIT 1`,
+        [course_code]
+      );
+
+      if (!deptRows.length) {
+        res.status(400).json({ message: "Department not found." });
+        return;
+      }
+
+      resolvedProgramId = deptRows[0].id;
+      resolvedDepartmentId = deptRows[0].department_id;
+
+      if (userRole !== "admin") {
+        if (!resolvedDepartmentId || resolvedDepartmentId !== userDepartmentId) {
+          res.status(403).json({ message: "Access denied for creating events outside your department." });
+          return;
+        }
+      }
+    }
+
     const connection = await pool.getConnection();
 
     try {
@@ -107,23 +150,11 @@ export class EventController {
       const eventId = eventResult.insertId;
 
       if (!isAllDepartments) {
-        console.log("looking up department code:", course_code);
-
-        const [deptRows]: any = await connection.execute(
-          `SELECT id, department_id FROM programs WHERE course_code = ? LIMIT 1`,
-          [course_code]
-        );
-        console.log("deptRows:", deptRows);
-
-        if (!deptRows.length) {
-          console.log("department not found");
+        if (!resolvedProgramId || !resolvedDepartmentId) {
           await connection.rollback();
-          res.status(400).json({ message: "Department not found." });
+          res.status(400).json({ message: "Invalid resolved department/program." });
           return;
         }
-
-        const resolvedProgramId = deptRows[0].id;
-        const resolvedDepartmentId = deptRows[0].department_id;
 
         console.log("inserting event_audiences...");
         await connection.execute(
@@ -156,7 +187,8 @@ export class EventController {
     return;
   }
 
-  const adminRoles: Role[] = ["admin","csg_president","it_governor","cba_governor","ceas_governor","coc_governor","chm_governor"];
+    // Only `admin` gets cross-department access. Governors must stay department-scoped.
+    const adminRoles: Role[] = ["admin"];
 
   try {
     let events: any[] = [];
@@ -216,13 +248,14 @@ export class EventController {
         FROM events e
         LEFT JOIN users u            ON u.id  = e.created_by
         LEFT JOIN event_audiences ea ON ea.event_id = e.id
+          AND (e.is_all_departments = 1 OR ea.department_id = ?)
         LEFT JOIN departments d      ON d.id = ea.department_id
         LEFT JOIN programs p         ON p.id = ea.program_id
         WHERE e.is_all_departments = 1
           OR ea.department_id = ?
         GROUP BY e.id
         ORDER BY e.date DESC`,
-        [departmentId]
+        [departmentId, departmentId]
       );
       events = rows;
     }
@@ -232,6 +265,77 @@ export class EventController {
 
   } catch (error) {
     console.error("[getEvents] Error:", error);
+    res.status(500).json({ message: "Internal server error." });
+  }
+}
+
+async getCurrentEvent(req: Request, res: Response): Promise<void> {
+  try {
+      const departmentId = req.user?.department_id ?? null;
+
+      // When logged in with a department token, only return:
+      // - events marked as `is_all_departments`
+      // - events that target the user's `department_id`
+      // And only include audiences matching the user's department (for non-all-dept events).
+      if (departmentId) {
+        const [rows]: any = await pool.execute(
+          `SELECT
+            e.*,
+            u.username AS created_by_username,
+            JSON_ARRAYAGG(
+              JSON_OBJECT(
+                'department_id',   ea.department_id,
+                'department_name', d.name,
+                'program_id',      ea.program_id,
+                'course_code',     p.course_code,
+                'course_name',     p.course_name,
+                'year_level',      ea.year_level
+              )
+            ) AS audiences
+          FROM events e
+          LEFT JOIN users u            ON u.id  = e.created_by
+          LEFT JOIN event_audiences ea ON ea.event_id = e.id AND (e.is_all_departments = 1 OR ea.department_id = ?)
+          LEFT JOIN departments d      ON d.id = ea.department_id
+          LEFT JOIN programs p         ON p.id = ea.program_id
+          WHERE e.is_all_departments = 1 OR ea.department_id = ?
+          GROUP BY e.id
+          ORDER BY e.date DESC`,
+          [departmentId, departmentId]
+        );
+
+        res.status(200).json({ events: rows });
+        return;
+      }
+
+      // Public (not logged in): only show global events.
+      const [rows]: any = await pool.execute(
+        `SELECT
+          e.*,
+          u.username AS created_by_username,
+          JSON_ARRAYAGG(
+            JSON_OBJECT(
+              'department_id',   ea.department_id,
+              'department_name', d.name,
+              'program_id',      ea.program_id,
+              'course_code',     p.course_code,
+              'course_name',     p.course_name,
+              'year_level',      ea.year_level
+            )
+          ) AS audiences
+        FROM events e
+        LEFT JOIN users u            ON u.id  = e.created_by
+        LEFT JOIN event_audiences ea ON ea.event_id = e.id AND e.is_all_departments = 1
+        LEFT JOIN departments d      ON d.id = ea.department_id
+        LEFT JOIN programs p         ON p.id = ea.program_id
+        WHERE e.is_all_departments = 1
+        GROUP BY e.id
+        ORDER BY e.date DESC`
+      );
+
+      res.status(200).json({ events: rows });
+
+  } catch (error) {
+    console.error("[getCurrentEvent] Error:", error);
     res.status(500).json({ message: "Internal server error." });
   }
 }

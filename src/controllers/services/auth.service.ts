@@ -9,7 +9,7 @@ const userRepository = new UserRepository();
 export async function verifyUserCredentials(
   username: string,
   password: string
-): Promise<{ id: number; username: string; role: string } | null> {
+): Promise<{ id: number; username: string; role: string, department_id: number | null } | null> {
   
   const user = await userRepository.findByUsername(username);
   if (!user) return null;
@@ -20,9 +20,22 @@ export async function verifyUserCredentials(
   return user;
 }
 
-export function generateAuthToken(user: { id: number; username: string; role: string }) {
+export function generateAuthToken(user: { id: number; username: string; role: string; department_id?: number | null }) {
   return jwt.sign(
-    { id: user.id, username: user.username, role: user.role },
+    { id: user.id, username: user.username, role: user.role, department_id: user.department_id ?? null },
+    env.jwtSecret,
+    { expiresIn: "7d" }
+  );
+}
+
+export function generateDepartmentToken(department: { department_id: number; department_name: string; department_code: string }) {
+  console.log("generateDepartmentToken payload:", department);
+  return jwt.sign(
+    { 
+      department_id: department.department_id,
+      department_name: department.department_name,
+      department_code: department.department_code
+    },
     env.jwtSecret,
     { expiresIn: "7d" }
   );
