@@ -29,7 +29,6 @@ interface CreateEventBody {
 
 export class EventController {
   async createEvent(req: Request, res: Response): Promise<void> {
-    console.log("createEvent hit", req.body);
     const createdBy: number = req.user?.id!;
 
     if (!createdBy) {
