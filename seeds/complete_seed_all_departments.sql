@@ -12,7 +12,7 @@ SET FOREIGN_KEY_CHECKS=0;
 INSERT IGNORE INTO departments (name, code) VALUES
 ('College of Education, Arts and Sciences', 'CEAS'),
 ('College of Information Technology', 'CIT'),
-('College of Criminology', 'COC'),
+('College of Criminal Justice Education', 'CCJE'),
 ('College of Hospitality Management', 'CHM'),
 ('College of Business Administration', 'CBA');
 
@@ -25,7 +25,7 @@ INSERT INTO programs (course_code, course_name, major, department_id) VALUES
 ('BSED', 'Bachelor of Secondary Education Major in Math', 'Math', (SELECT id FROM departments WHERE code = 'CEAS')),
 ('BSED', 'Bachelor of Secondary Education Major in Filipino', 'Filipino', (SELECT id FROM departments WHERE code = 'CEAS')),
 ('BSIT', 'Bachelor of Science in Information Technology', '', (SELECT id FROM departments WHERE code = 'CIT')),
-('BSCRIM', 'Bachelor of Science in Criminology', '', (SELECT id FROM departments WHERE code = 'COC')),
+('BSCRIM', 'Bachelor of Science in Criminology', '', (SELECT id FROM departments WHERE code = 'CCJE')),
 ('BSHM', 'Bachelor of Science in Hospitality Management', '', (SELECT id FROM departments WHERE code = 'CHM')),
 ('BSBA', 'BSBA Marketing Management', 'Marketing Management', (SELECT id FROM departments WHERE code = 'CBA')),
 ('BSBA', 'BSBA Human Resource Development Management', 'Human Resource Development Management', (SELECT id FROM departments WHERE code = 'CBA')),
