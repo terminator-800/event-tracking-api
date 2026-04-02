@@ -5,7 +5,7 @@ export async function createAttendanceTable(): Promise<void> {
       CREATE TABLE IF NOT EXISTS attendance (
         id            INT AUTO_INCREMENT PRIMARY KEY,
         student_id    INT NOT NULL,
-        event_id      INT NOT NULL,        -- references YOUR existing events table
+        event_id      INT NOT NULL,        
         am_time_in    TIME NULL,
         am_time_out   TIME NULL,
         pm_time_in    TIME NULL,

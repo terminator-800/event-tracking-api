@@ -24,7 +24,7 @@ interface CreateEventBody {
   programId?: number;
   yearLevel?: string;
   major?: string;
-  fineAmount?: number;
+  fineAmount: number;
 }
 
 export class EventController {
@@ -70,7 +70,7 @@ export class EventController {
 
     // Non-admin users (e.g. governors) may only create events for their own department.
     // Defense-in-depth: the route already restricts roles, but we enforce department match here too.
-    if (userRole !== "admin") {
+    if (userRole !== "admin" && userRole !== "csg_president") {
       if (isAllDepartments) {
         res.status(403).json({ message: "Access denied for creating all-departments events." });
         return;
@@ -110,7 +110,7 @@ export class EventController {
       resolvedProgramId = deptRows[0].id;
       resolvedDepartmentId = deptRows[0].department_id;
 
-      if (userRole !== "admin") {
+      if (userRole !== "admin" && userRole !== "csg_president") {
         if (!resolvedDepartmentId || resolvedDepartmentId !== userDepartmentId) {
           res.status(403).json({ message: "Access denied for creating events outside your department." });
           return;
@@ -270,8 +270,10 @@ export class EventController {
 
 async getCurrentEvent(req: Request, res: Response): Promise<void> {
   try {
-      const departmentId = req.user?.department_id ?? null;
+       const departmentId = req.user?.department_id ?? null;
+    const role = req.user?.role ?? null;
 
+    console.log("[getCurrentEvent] user:", { role, departmentId });
       // When logged in with a department token, only return:
       // - events marked as `is_all_departments`
       // - events that target the user's `department_id`
@@ -296,9 +298,10 @@ async getCurrentEvent(req: Request, res: Response): Promise<void> {
           LEFT JOIN event_audiences ea ON ea.event_id = e.id AND (e.is_all_departments = 1 OR ea.department_id = ?)
           LEFT JOIN departments d      ON d.id = ea.department_id
           LEFT JOIN programs p         ON p.id = ea.program_id
-          WHERE e.is_all_departments = 1 OR ea.department_id = ?
+          WHERE (e.is_all_departments = 1 OR ea.department_id = ?)
+          AND e.status IN ('Upcoming', 'Ongoing')
           GROUP BY e.id
-          ORDER BY e.date DESC`,
+          ORDER BY e.date ASC`,
           [departmentId, departmentId]
         );
 
@@ -327,10 +330,12 @@ async getCurrentEvent(req: Request, res: Response): Promise<void> {
         LEFT JOIN departments d      ON d.id = ea.department_id
         LEFT JOIN programs p         ON p.id = ea.program_id
         WHERE e.is_all_departments = 1
+        AND e.status IN ('Upcoming', 'Ongoing')
         GROUP BY e.id
-        ORDER BY e.date DESC`
+        ORDER BY e.date ASC`
       );
-
+      console.log("get current events:", rows);
+      
       res.status(200).json({ events: rows });
 
   } catch (error) {

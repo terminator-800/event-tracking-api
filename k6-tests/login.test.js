@@ -4,10 +4,11 @@ import { check, sleep } from "k6";
 // Pool of test users
 const users = [
   { username: "admin", password: "@Normi.2026" },
-  { username: "gov-IT", password: "@Normi.2026" },
-  { username: "gov-CEAS", password: "@Normi.2026" },
-  { username: "gov-CBA", password: "@Normi.2026" },
-  { username: "csg-president", password: "@Normi.2026" },
+  { username: "it", password: "123123" },
+  { username: "ceas", password: "123123" },
+  { username: "cba", password: "123123" },
+  { username: "csg", password: "123123" },
+  { username: "ccje", password: "123123" },
 ];
 
 export const options = {
@@ -43,5 +44,5 @@ export default function () {
 
   check(meRes, { "accessed /me": r => r.status === 200 });
 
-  sleep(1);
+  sleep(2);
 }

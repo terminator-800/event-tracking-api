@@ -18,6 +18,7 @@ export async function createEventsTable(): Promise<void> {
       pm_grace_out        INT NOT NULL DEFAULT 0,
       is_mandatory        BOOLEAN      NOT NULL DEFAULT FALSE,
       is_all_departments  BOOLEAN      NOT NULL DEFAULT FALSE,
+      fines_generated     BOOLEAN      NOT NULL DEFAULT FALSE,
       status              ENUM('Upcoming','Ongoing','Completed','Cancelled') NOT NULL DEFAULT 'Upcoming',
       audience_notes      TEXT,
       fine_amount         DECIMAL(10,2) NOT NULL DEFAULT 0,
