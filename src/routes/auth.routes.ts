@@ -7,7 +7,7 @@ const router = Router();
 const authController = new AuthController();
 
 // public routes
-router.post("/login", loginLimiter, (req, res) => authController.login(req, res));
+router.post("/login", (req, res) => authController.login(req, res));
 router.post("/logout", (req, res) => authController.logout(req, res));
 router.post("/department-sign-in", loginLimiter, (req, res) => authController.departmentSignIn(req, res));
 

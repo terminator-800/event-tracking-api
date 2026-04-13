@@ -10,9 +10,11 @@ export async function createFinesTable(): Promise<void> {
         reason ENUM(
           'Late AM',
           'Absent AM',
+          'Absent AM Time Out',  
           'Missed AM Time Out',
           'Late PM',
           'Absent PM',
+          'Absent PM Time Out',   
           'Missed PM Time Out'
         ) NOT NULL,
         amount DECIMAL(10,2) NOT NULL,

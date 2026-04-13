@@ -1,0 +1,39 @@
+csg - clentboco926@gmail.com
+chm - sheenebermuddez1@gmail.com
+cit - ROVIECUPINYAZZI@GMAIL.COM
+cba - monteclarojaycamee@gmail.com
+ceas - jezrielflores8@gmail.com
+ccje - remolunacristy17@gmail.com
+
+CIT
+'455', '202100641', 'HANZ CARL', '', 'HORNIDO', 'HANZHORNIDO17@GMAIL.COM', '2026-04-06 18:37:55'
+'479', '2022006503', 'MARSMERL', 'ROSALES', 'ESPIRITU', 'marsmerlespiritu@gmail.com', '2026-04-06 18:37:55'
+2021002091 - nanual
+'460', '2022003713', 'DENNESE KEITH', 'ADOBAS', 'MEMBRANO', 'aominetaigamurasakibara@gmail.com', '2026-04-06 18:37:55'
+
+CEAS
+'1', '202202361', 'SUNNY JANE', 'JABAGAT', 'LIGTAS', 'lsunnyjane@gmail.com' BEED
+'3', '2020001133', 'TRANI JAY', '', 'TAMPEPE', 'tjceballos25@gmail.com',    ENGLISH
+'259', '2023012727', 'DANIZA', 'LUPOGAN', 'AGCOL', 'agcoldaniza@gmail.com', MATH
+'411', '2025018576', 'ANGEL MAE', 'MONGADO', 'BANAO', 'ANGELMAEBANAO@GMAIL.COM' FILIPINO
+
+CCJE
+'744', '2021002341', 'DELJUN', '', 'FEDERICOS', 'noemail_743@example.edu', '2026-04-06 18:37:55'
+'790', '2022003941', 'ANGEL BRYAN', 'PEROCHO', 'SALA', 'katherinecabodbod09@gmail.com', '2026-04-06 18:37:55'
+'833', '2022004123', 'MARK ANTHONY', 'GUADALQUIBER', 'LLIDO', 'markanthonyllido03@gmail.com', '2026-04-06 18:37:55'
+'882', '2022004339', 'CHRISTIAN PAUL', 'ESTIOCO', 'SEGURA', 'Christiansummary@gmail.com', '2026-04-06 18:37:55'
+
+CBA
+'2109', '202100487', 'DELFIN', 'CANDELARIO', 'CABONCE II', 'noemail_2108@example.edu', 'BSBA', 'BSBA Marketing Management', 'Marketing Management' MM
+'2253', '2022009279', 'CRISTINE', 'TIEMPO', 'SALTA', 'saltacristine@gmail.com', 'BSBA', 'BSBA Human Resource Development Management', 'Human Resource Development Management' HRDM
+'2162', '2022004958', 'CHARIN', 'GEBEIRTAS', 'BERNALTE', 'charinbernalte18@gmail.com', 'BSBA', 'BSBA Financial Management', 'Financial Management',  FM
+
+
+CHM
+'1726', '202100995', 'JHULIAN', 'COSICOL', 'SABUTANAN', 'jhuliansabutanan19@gmail.com', '2026-04-06 18:37:55'
+'1764', '2022006259', 'CHARITY KHATE', 'BACLAYON', 'FAMADOR', 'famadorcharitykhate@gmail.com', '2026-04-06 18:37:55'
+'1816', '2023011849', 'SHANNAH MARIE', 'MIOLE', 'ORILLA', 'SHANNAHMARIEORILLA@GMAIL.COM', '2026-04-06 18:37:55'
+'1812', '2023011576', 'MERRYLYN', 'CELESTIAL', 'BIONG', 'merrylynbiong245@gmail.com', '2026-04-06 18:37:55'
+
+
+

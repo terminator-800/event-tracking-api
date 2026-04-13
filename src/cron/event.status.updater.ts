@@ -3,14 +3,14 @@ import { pool } from "../config/db";
 
 function getManilaDateTime(): { currentDate: string; currentTime: string } {
       // 🧪 TESTING OVERRIDE
-//   return {
-//     currentDate: "2026-04-02",
-//     currentTime: "18:01:00", // 👈 1 minute past pm_time_out 18:00:00
-//   };
-  const now = new Date();
-  const manilaLocale = now.toLocaleString("en-CA", { timeZone: "Asia/Manila", hour12: false });
-  const [currentDate, currentTime] = manilaLocale.split(", ");
-  return { currentDate, currentTime };
+  return {
+    currentDate: "2026-04-13",
+    currentTime: "18:00:00", 
+  };
+  // const now = new Date();
+  // const manilaLocale = now.toLocaleString("en-CA", { timeZone: "Asia/Manila", hour12: false });
+  // const [currentDate, currentTime] = manilaLocale.split(", ");
+  // return { currentDate, currentTime };
 }
 
 async function markOngoingEvents(currentDate: string, currentTime: string): Promise<number> {
@@ -91,16 +91,23 @@ async function generateEndOfEventFines(currentDate: string): Promise<void> {
 
       if (isWholeOrHalf || isAMOnly) {
         if (!att || !att.am_time_in) {
+          // fine for no tap in
           await pool.execute(
             `INSERT IGNORE INTO fines (student_id, event_id, attendance_id, reason, amount)
-             VALUES (?, ?, NULL, 'Absent AM', ?)`,
+            VALUES (?, ?, NULL, 'Absent AM', ?)`,
+            [student.student_id, event.id, event.fine_amount]
+          );
+          // ✅ fine for no tap out too (they were fully absent)
+          await pool.execute(
+            `INSERT IGNORE INTO fines (student_id, event_id, attendance_id, reason, amount)
+            VALUES (?, ?, NULL, 'Absent AM Time Out', ?)`,
             [student.student_id, event.id, event.fine_amount]
           );
         }
         if (att?.am_time_in && !att.am_time_out) {
           await pool.execute(
             `INSERT IGNORE INTO fines (student_id, event_id, attendance_id, reason, amount)
-             VALUES (?, ?, ?, 'Missed AM Time Out', ?)`,
+            VALUES (?, ?, ?, 'Missed AM Time Out', ?)`,
             [student.student_id, event.id, att.id, event.fine_amount]
           );
         }
@@ -108,16 +115,23 @@ async function generateEndOfEventFines(currentDate: string): Promise<void> {
 
       if (isWholeOrHalf || isPMOnly) {
         if (!att || !att.pm_time_in) {
+          // fine for no tap in
           await pool.execute(
             `INSERT IGNORE INTO fines (student_id, event_id, attendance_id, reason, amount)
-             VALUES (?, ?, NULL, 'Absent PM', ?)`,
+            VALUES (?, ?, NULL, 'Absent PM', ?)`,
+            [student.student_id, event.id, event.fine_amount]
+          );
+          // ✅ fine for no tap out too (they were fully absent)
+          await pool.execute(
+            `INSERT IGNORE INTO fines (student_id, event_id, attendance_id, reason, amount)
+            VALUES (?, ?, NULL, 'Absent PM Time Out', ?)`,
             [student.student_id, event.id, event.fine_amount]
           );
         }
         if (att?.pm_time_in && !att.pm_time_out) {
           await pool.execute(
             `INSERT IGNORE INTO fines (student_id, event_id, attendance_id, reason, amount)
-             VALUES (?, ?, ?, 'Missed PM Time Out', ?)`,
+            VALUES (?, ?, ?, 'Missed PM Time Out', ?)`,
             [student.student_id, event.id, att.id, event.fine_amount]
           );
         }
