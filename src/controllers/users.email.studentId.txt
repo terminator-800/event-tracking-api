@@ -12,10 +12,33 @@ CIT
 '460', '2022003713', 'DENNESE KEITH', 'ADOBAS', 'MEMBRANO', 'aominetaigamurasakibara@gmail.com', '2026-04-06 18:37:55'
 
 CEAS
-'1', '202202361', 'SUNNY JANE', 'JABAGAT', 'LIGTAS', 'lsunnyjane@gmail.com' BEED
-'3', '2020001133', 'TRANI JAY', '', 'TAMPEPE', 'tjceballos25@gmail.com',    ENGLISH
+
+CEAS-BEED
+'1', '202202361', 'SUNNY JANE', 'JABAGAT', 'LIGTAS', 'lsunnyjane@gmail.com' 
+'2', '202519640', 'FEBIE JANE', '', 'VALES', 'vALESFEBIEJANE@GMAIL.COM', '2026-04-06 18:37:55'
+'5', '2020001261', 'GEZALYN', 'HELUANO', 'TUYAN', 'gezyan493@gmail.com', '2026-04-06 18:37:55'
+
+CEAS-ENGLISH
+'3', '2020001133', 'TRANI JAY', '', 'TAMPEPE', 'tjceballos25@gmail.com', '2026-04-06 18:37:55', 'English'
+'4', '2020001259', 'JELLIE', 'BADANA', 'TUTOR', 'jllttr20@gmail.com', '2026-04-06 18:37:55', 'English'
+'11', '2021003336', 'ARIEL', 'UMBAAD', 'CINCO', 'arielcinco1994@gmail.com', '2026-04-06 18:37:55', 'English'
+'12', '2021003406', 'ROSE-JEAN', 'LUMINDAS', 'DIZON', 'dizonrosejean793@gmail.com', '2026-04-06 18:37:55', 'English'
+
+
+CEAS-MATH
 '259', '2023012727', 'DANIZA', 'LUPOGAN', 'AGCOL', 'agcoldaniza@gmail.com', MATH
+'10', '2021003223', 'SHELLAH', 'SALCE', 'ALGODON', 'noemail_9@example.edu', '2026-04-06 18:37:55', 'Math'
+'14', '2022003499', 'JESSA', 'BERIDO', 'AGUILLON', 'jessaaguillon34@gmail.com', '2026-04-06 18:37:55', 'Math'
+'24', '2022003683', 'WILLAJIM', 'CABILAN', 'DURERO', 'WILLAJIMDURERO4@GMAIL.COM', '2026-04-06 18:37:55', 'Math'
+'29', '2022003709', 'JOMAR', 'LEOP', 'PELENIO', 'peleniojomar@0gmail.com', '2026-04-06 18:37:55', 'Math'
+
+CEAS-FILIPINO
 '411', '2025018576', 'ANGEL MAE', 'MONGADO', 'BANAO', 'ANGELMAEBANAO@GMAIL.COM' FILIPINO
+'16', '2022003530', 'KRISTY', 'MAAMO', 'ORAPA', 'kristyorapa75@gmail.com', '2026-04-06 18:37:55', 'Filipino'
+'18', '2022003567', 'KAYE', 'ESPUERTA', 'LANQUINO', 'espuerta.lanquino.kaye@gmail.com', '2026-04-06 18:37:55', 'Filipino'
+'21', '2022003657', 'CHRISTIAN JAIRO', 'GUZON', 'GABACA', 'gabacachristianjairo@gmail.com', '2026-04-06 18:37:55', 'Filipino'
+'22', '2022003667', 'CRIS JUSPIER', 'LACRE', 'OWAPIN', 'crisjowap@gmail.com', '2026-04-06 18:37:55', 'Filipino'
+
 
 CCJE
 '744', '2021002341', 'DELJUN', '', 'FEDERICOS', 'noemail_743@example.edu', '2026-04-06 18:37:55'
@@ -24,9 +47,29 @@ CCJE
 '882', '2022004339', 'CHRISTIAN PAUL', 'ESTIOCO', 'SEGURA', 'Christiansummary@gmail.com', '2026-04-06 18:37:55'
 
 CBA
+
+BSBA-MM
 '2109', '202100487', 'DELFIN', 'CANDELARIO', 'CABONCE II', 'noemail_2108@example.edu', 'BSBA', 'BSBA Marketing Management', 'Marketing Management' MM
+'2109', '202100487', 'DELFIN', 'CANDELARIO', 'CABONCE II', 'noemail_2108@example.edu', '2026-04-06 18:37:55', 'Marketing Management'
+'2113', '2022003550', 'RAVE JOSHUA', 'LEOP', 'BASADRE', 'ravejoshuabasadre@gmail.com', '2026-04-06 18:37:55', 'Marketing Management'
+'2116', '2022003600', 'JESSICA', '', 'BAMBE', 'bambejessica07@gmail.com', '2026-04-06 18:37:55', 'Marketing Management'
+'2117', '2022003693', 'CHRISTOPHER', 'OPEÑA', 'BERNAT', 'CHRISTOPHERBERNAT93@GMAIL.COM', '2026-04-06 18:37:55', 'Marketing Management'
+'2121', '2022003849', 'MARRYJOY', 'BRAZE', 'PANTUHAN', 'marrjoy0919@gmail.com', '2026-04-06 18:37:55', 'Marketing Management'
+
+
+BSBA-HRDM
 '2253', '2022009279', 'CRISTINE', 'TIEMPO', 'SALTA', 'saltacristine@gmail.com', 'BSBA', 'BSBA Human Resource Development Management', 'Human Resource Development Management' HRDM
+'2110', '2021002835', 'LEA', 'APOLINARIO', 'PAULINO', 'Yang59@gmail.com', '2026-04-06 18:37:55', 'Human Resource Development Management'
+'2111', '2021003433', 'ROYETT', 'FERNANDO', 'MABANDOS', 'noemail_2110@example.edu', '2026-04-06 18:37:55', 'Human Resource Development Management'
+'2115', '2022003596', 'NOREEN ANGELA', 'SAGA-AD', 'GALVEZ', 'tamangela7@gmail.com', '2026-04-06 18:37:55', 'Human Resource Development Management'
+'2125', '2022003935', 'EDCEL', 'CORTEZ', 'RESIDILLA', 'residillaedce123@gmail.com', '2026-04-06 18:37:55', 'Human Resource Development Management'
+
+BSBA-FM
 '2162', '2022004958', 'CHARIN', 'GEBEIRTAS', 'BERNALTE', 'charinbernalte18@gmail.com', 'BSBA', 'BSBA Financial Management', 'Financial Management',  FM
+'2112', '2022003538', 'KENT JAMES', 'PIEL', 'MOMOY', 'kentjames1729@gmail.com', '2026-04-06 18:37:55', 'Financial Management'
+'2114', '2022003569', 'ERIKA', '', 'LEGASPI', 'ekanglegaspi10@gmail.com', '2026-04-06 18:37:55', 'Financial Management'
+'2118', '2022003728', 'HONEY BABE', 'ALPUERTO', 'MAKINANO', 'makinanohoneybabe82@gmail.com', '2026-04-06 18:37:55', 'Financial Management'
+'2119', '2022003793', 'JAHN PHIL', 'ALBER', 'PAGAS', 'jahnphilpagas@gmail.com', '2026-04-06 18:37:55', 'Financial Management'
 
 
 CHM

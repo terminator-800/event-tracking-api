@@ -1,10 +1,12 @@
 import cron from 'node-cron';
 import { pool } from "../config/db";
 
+let isCronRunInProgress = false;
+
 function getManilaDateTime(): { currentDate: string; currentTime: string } {
       // 🧪 TESTING OVERRIDE
   return {
-    currentDate: "2026-04-13",
+    currentDate: "2026-04-15",
     currentTime: "18:00:00", 
   };
   // const now = new Date();
@@ -63,79 +65,90 @@ async function generateEndOfEventFines(currentDate: string): Promise<void> {
   );
 
   for (const event of events as any[]) {
-    const studentsQuery = event.is_all_departments
-      ? `SELECT DISTINCT s.id as student_id
-         FROM students s
-         JOIN enrollments e ON e.student_id = s.id`
-      : `SELECT DISTINCT s.id as student_id
-         FROM students s
-         JOIN enrollments e ON e.student_id = s.id
-         JOIN event_audiences ea ON ea.program_id = e.program_id
-         WHERE ea.event_id = ?`;
+    const isWholeOrHalf = ['Whole Day', 'Half Day'].includes(event.duration);
+    const isAMOnly      = event.duration === 'AM Only';
+    const isPMOnly      = event.duration === 'PM Only';
 
-    const studentsParams = event.is_all_departments ? [] : [event.id];
-    const [students] = await pool.execute(studentsQuery, studentsParams);
+    let eligibleStudentsSql = `SELECT DISTINCT s.id as student_id
+      FROM students s
+      JOIN enrollments e ON e.student_id = s.id`;
+    const eligibleParams: any[] = [];
 
-    for (const student of students as any[]) {
-      const [attRows] = await pool.execute(
-        `SELECT id, am_time_in, am_time_out, pm_time_in, pm_time_out
-         FROM attendance
-         WHERE student_id = ? AND event_id = ?`,
-        [student.student_id, event.id]
+    if (Number(event.is_all_departments) === 1) {
+      const [audRows] = await pool.execute(
+        `SELECT year_level FROM event_audiences WHERE event_id = ? AND year_level IS NOT NULL LIMIT 1`,
+        [event.id]
       );
-      const att = (attRows as any[])[0] ?? null;
-
-      const isWholeOrHalf = ['Whole Day', 'Half Day'].includes(event.duration);
-      const isAMOnly      = event.duration === 'AM Only';
-      const isPMOnly      = event.duration === 'PM Only';
-
-      if (isWholeOrHalf || isAMOnly) {
-        if (!att || !att.am_time_in) {
-          // fine for no tap in
-          await pool.execute(
-            `INSERT IGNORE INTO fines (student_id, event_id, attendance_id, reason, amount)
-            VALUES (?, ?, NULL, 'Absent AM', ?)`,
-            [student.student_id, event.id, event.fine_amount]
-          );
-          // ✅ fine for no tap out too (they were fully absent)
-          await pool.execute(
-            `INSERT IGNORE INTO fines (student_id, event_id, attendance_id, reason, amount)
-            VALUES (?, ?, NULL, 'Absent AM Time Out', ?)`,
-            [student.student_id, event.id, event.fine_amount]
-          );
-        }
-        if (att?.am_time_in && !att.am_time_out) {
-          await pool.execute(
-            `INSERT IGNORE INTO fines (student_id, event_id, attendance_id, reason, amount)
-            VALUES (?, ?, ?, 'Missed AM Time Out', ?)`,
-            [student.student_id, event.id, att.id, event.fine_amount]
-          );
-        }
+      const audience = (audRows as any[])[0];
+      if (audience?.year_level != null) {
+        eligibleStudentsSql += ` WHERE e.year_level = ?`;
+        eligibleParams.push(audience.year_level);
       }
+    } else {
+      eligibleStudentsSql += `
+        JOIN event_audiences ea ON ea.program_id = e.program_id
+        WHERE ea.event_id = ?`;
+      eligibleParams.push(event.id);
+    }
 
-      if (isWholeOrHalf || isPMOnly) {
-        if (!att || !att.pm_time_in) {
-          // fine for no tap in
-          await pool.execute(
-            `INSERT IGNORE INTO fines (student_id, event_id, attendance_id, reason, amount)
-            VALUES (?, ?, NULL, 'Absent PM', ?)`,
-            [student.student_id, event.id, event.fine_amount]
-          );
-          // ✅ fine for no tap out too (they were fully absent)
-          await pool.execute(
-            `INSERT IGNORE INTO fines (student_id, event_id, attendance_id, reason, amount)
-            VALUES (?, ?, NULL, 'Absent PM Time Out', ?)`,
-            [student.student_id, event.id, event.fine_amount]
-          );
-        }
-        if (att?.pm_time_in && !att.pm_time_out) {
-          await pool.execute(
-            `INSERT IGNORE INTO fines (student_id, event_id, attendance_id, reason, amount)
-            VALUES (?, ?, ?, 'Missed PM Time Out', ?)`,
-            [student.student_id, event.id, att.id, event.fine_amount]
-          );
-        }
-      }
+    const eligibleStudentsCte = `(${eligibleStudentsSql}) es`;
+
+    if (isWholeOrHalf || isAMOnly) {
+      await pool.execute(
+        `INSERT IGNORE INTO fines (student_id, event_id, attendance_id, reason, amount)
+         SELECT es.student_id, ?, NULL, 'Absent AM', ?
+         FROM ${eligibleStudentsCte}
+         LEFT JOIN attendance a ON a.student_id = es.student_id AND a.event_id = ?
+         WHERE a.id IS NULL OR a.am_time_in IS NULL`,
+        [event.id, event.fine_amount, event.id, ...eligibleParams]
+      );
+
+      await pool.execute(
+        `INSERT IGNORE INTO fines (student_id, event_id, attendance_id, reason, amount)
+         SELECT es.student_id, ?, NULL, 'Absent AM Time Out', ?
+         FROM ${eligibleStudentsCte}
+         LEFT JOIN attendance a ON a.student_id = es.student_id AND a.event_id = ?
+         WHERE a.id IS NULL OR a.am_time_in IS NULL`,
+        [event.id, event.fine_amount, event.id, ...eligibleParams]
+      );
+
+      await pool.execute(
+        `INSERT IGNORE INTO fines (student_id, event_id, attendance_id, reason, amount)
+         SELECT es.student_id, ?, a.id, 'Missed AM Time Out', ?
+         FROM ${eligibleStudentsCte}
+         INNER JOIN attendance a ON a.student_id = es.student_id AND a.event_id = ?
+         WHERE a.am_time_in IS NOT NULL AND a.am_time_out IS NULL`,
+        [event.id, event.fine_amount, event.id, ...eligibleParams]
+      );
+    }
+
+    if (isWholeOrHalf || isPMOnly) {
+      await pool.execute(
+        `INSERT IGNORE INTO fines (student_id, event_id, attendance_id, reason, amount)
+         SELECT es.student_id, ?, NULL, 'Absent PM', ?
+         FROM ${eligibleStudentsCte}
+         LEFT JOIN attendance a ON a.student_id = es.student_id AND a.event_id = ?
+         WHERE a.id IS NULL OR a.pm_time_in IS NULL`,
+        [event.id, event.fine_amount, event.id, ...eligibleParams]
+      );
+
+      await pool.execute(
+        `INSERT IGNORE INTO fines (student_id, event_id, attendance_id, reason, amount)
+         SELECT es.student_id, ?, NULL, 'Absent PM Time Out', ?
+         FROM ${eligibleStudentsCte}
+         LEFT JOIN attendance a ON a.student_id = es.student_id AND a.event_id = ?
+         WHERE a.id IS NULL OR a.pm_time_in IS NULL`,
+        [event.id, event.fine_amount, event.id, ...eligibleParams]
+      );
+
+      await pool.execute(
+        `INSERT IGNORE INTO fines (student_id, event_id, attendance_id, reason, amount)
+         SELECT es.student_id, ?, a.id, 'Missed PM Time Out', ?
+         FROM ${eligibleStudentsCte}
+         INNER JOIN attendance a ON a.student_id = es.student_id AND a.event_id = ?
+         WHERE a.pm_time_in IS NOT NULL AND a.pm_time_out IS NULL`,
+        [event.id, event.fine_amount, event.id, ...eligibleParams]
+      );
     }
 
     // ✅ Mark event as processed so cron skips it next time
@@ -147,6 +160,11 @@ async function generateEndOfEventFines(currentDate: string): Promise<void> {
 }
 
 async function updateEventStatuses(): Promise<void> {
+  if (isCronRunInProgress) {
+    console.log("[EventCron] Previous run still in progress; skipping this tick.");
+    return;
+  }
+  isCronRunInProgress = true;
   const { currentDate, currentTime } = getManilaDateTime();
 
   try {
@@ -168,6 +186,8 @@ async function updateEventStatuses(): Promise<void> {
     );
   } catch (error) {
     console.error('[EventCron] Failed to update event statuses:', error);
+  } finally {
+    isCronRunInProgress = false;
   }
 }
 

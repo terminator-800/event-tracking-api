@@ -3,19 +3,51 @@
 
 export class AttendanceController {
 
-private getManilaDateTime(): { currentDate: string; currentTime: string } {
+private parseSimulatedTime(raw: unknown): string | null {
+  if (raw == null) return null;
+  const v = String(raw).trim();
+  if (!v) return null;
+  if (/^\d{2}:\d{2}(:\d{2})?$/.test(v)) return v.length === 5 ? `${v}:00` : v;
+  const m = /^(\d{1,2}):(\d{2})\s*([AaPp][Mm])$/.exec(v);
+  if (!m) return null;
+  let hh = Number(m[1]);
+  const mm = Number(m[2]);
+  const mer = m[3].toUpperCase();
+  if (hh < 1 || hh > 12 || mm < 0 || mm > 59) return null;
+  if (mer === "AM") {
+    if (hh === 12) hh = 0;
+  } else if (hh !== 12) {
+    hh += 12;
+  }
+  return `${String(hh).padStart(2, "0")}:${String(mm).padStart(2, "0")}:00`;
+}
 
-    // 🧪 TESTING OVERRIDE
-return {
-  currentDate: "2026-04-10",  // match an ongoing event's date
-  currentTime: "08:10:00",    // simulate a specific time
-};
-  
-  // normal code below (unreachable during testing)
-  // const now = new Date();
-  // const manilaLocale = now.toLocaleString("en-CA", { timeZone: "Asia/Manila", hour12: false });
-  // const [currentDate, currentTime] = manilaLocale.split(", ");
-  // return { currentDate, currentTime };
+private parseSimulatedDate(raw: unknown): string | null {
+  if (raw == null) return null;
+  const v = String(raw).trim();
+  return /^\d{4}-\d{2}-\d{2}$/.test(v) ? v : null;
+}
+
+private getManilaDateTime(simulated?: { date?: unknown; time?: unknown }): { currentDate: string; currentTime: string } {
+  if (process.env.NODE_ENV !== "production") {
+    const simulatedDate = this.parseSimulatedDate(simulated?.date);
+    const simulatedTime = this.parseSimulatedTime(simulated?.time);
+    if (simulatedDate || simulatedTime) {
+      const now = new Date();
+      const manilaLocale = now.toLocaleString("en-CA", { timeZone: "Asia/Manila", hour12: false });
+      const [currentDateRaw, currentTimeRaw] = manilaLocale.split(", ");
+      return {
+        currentDate: simulatedDate ?? currentDateRaw,
+        currentTime: simulatedTime ?? currentTimeRaw,
+      };
+    }
+  }
+
+  // 🧪 TESTING OVERRIDE (default fallback while testing)
+  return {
+    currentDate: "2026-04-15",
+    currentTime: "13:50:00",
+  };
 }
 
 private async findStudentByStudentId(studentId: string) {
@@ -145,8 +177,14 @@ private async isStudentInEventAudience(studentId: number, eventId: number, isAll
 }
 
 public recordAttendance = async (req: Request, res: Response): Promise<void> => {
-  const { studentId, attendanceKind, courseKey } = req.body;
-  console.log("[AttendanceController] Received attendance record request:", { studentId, attendanceKind, courseKey });
+  const { studentId, attendanceKind, courseKey, simulatedTapTime, simulatedDate } = req.body;
+  console.log("[AttendanceController] Received attendance record request:", {
+    studentId,
+    attendanceKind,
+    courseKey,
+    simulatedTapTime,
+    simulatedDate,
+  });
 
   if (!studentId || !attendanceKind || !courseKey) {
     res.status(400).json({ message: "studentId, attendanceKind, and courseKey are required." });
@@ -158,7 +196,10 @@ public recordAttendance = async (req: Request, res: Response): Promise<void> => 
     return;
   }
 
-  const { currentDate, currentTime } = this.getManilaDateTime();
+  const { currentDate, currentTime } = this.getManilaDateTime({
+    date: simulatedDate,
+    time: simulatedTapTime,
+  });
 
   try {
     const student = await this.findStudentByStudentId(studentId);
