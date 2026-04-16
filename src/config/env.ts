@@ -1,6 +1,6 @@
 import dotenv from "dotenv";
 
-dotenv.config();
+dotenv.config({ path: ".env.development" });
 
 const requiredVars = ["DB_HOST", "DB_PORT", "DB_USER", "DB_NAME"];
 
