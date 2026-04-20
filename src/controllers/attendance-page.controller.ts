@@ -1,5 +1,6 @@
 import { Request, Response } from "express";
 import { sqlTimeTo12Hour } from "../utils/sqlTime";
+import { toYmdDateString } from "../utils/sqlDate";
 import {
   countAttendedStudents,
   countEligibleStudents,
@@ -46,7 +47,7 @@ async function buildSummaryPayload(rows: ScopedEventRow[]) {
     out.push({
       id: String(e.id),
       name: e.name,
-      date: String(e.date).slice(0, 10),
+      date: toYmdDateString(e.date),
       status: st,
       sessionType: durationToSessionType(e),
       totalStudents: total,
@@ -152,7 +153,7 @@ export class AttendancePageController {
         event: {
           id: String(eventRow.id),
           name: eventRow.name,
-          date: String(eventRow.date).slice(0, 10),
+          date: toYmdDateString(eventRow.date),
           status: st,
           sessionType: durationToSessionType(eventRow),
           totalStudents: total,
