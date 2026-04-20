@@ -373,6 +373,78 @@ async updateEvent(req: Request, res: Response): Promise<void> {
   }
 }
 
+async deleteEvent(req: Request, res: Response): Promise<void> {
+  const userId = req.user?.id;
+  const userRole = req.user?.role;
+  const userDepartmentId = req.user?.department_id ?? null;
+
+  if (!userId) {
+    res.status(401).json({ message: "Unauthorized" });
+    return;
+  }
+
+  const eventId = Number(req.params.id);
+  if (!Number.isFinite(eventId) || eventId <= 0) {
+    res.status(400).json({ message: "Invalid event id." });
+    return;
+  }
+
+  const connection = await pool.getConnection();
+  try {
+    const [rows]: any = await connection.execute(
+      `SELECT
+        e.id, e.status, e.is_all_departments,
+        MAX(ea.department_id) AS department_id
+       FROM events e
+       LEFT JOIN event_audiences ea ON ea.event_id = e.id
+       WHERE e.id = ?
+       GROUP BY e.id`,
+      [eventId]
+    );
+
+    if (!rows.length) {
+      res.status(404).json({ message: "Event not found." });
+      return;
+    }
+
+    const event = rows[0];
+    const statusKey = String(event.status ?? "").trim().toLowerCase();
+    if (statusKey === "completed" || statusKey === "ongoing" || statusKey === "active") {
+      res.status(403).json({ message: "Completed or ongoing events cannot be deleted." });
+      return;
+    }
+
+    const adminRoles: Role[] = ["admin", "csg_president"];
+    if (!adminRoles.includes(userRole!)) {
+      const isAllDepartments = Number(event.is_all_departments) === 1;
+      if (!isAllDepartments) {
+        if (!userDepartmentId || Number(event.department_id) !== Number(userDepartmentId)) {
+          res.status(403).json({ message: "Access denied for deleting this event." });
+          return;
+        }
+      }
+    }
+
+    await connection.beginTransaction();
+    await connection.execute(`DELETE FROM event_audiences WHERE event_id = ?`, [eventId]);
+    const [result] = await connection.execute<ResultSetHeader>(`DELETE FROM events WHERE id = ?`, [eventId]);
+    if (result.affectedRows === 0) {
+      await connection.rollback();
+      res.status(404).json({ message: "Event not found." });
+      return;
+    }
+    await connection.commit();
+
+    res.status(200).json({ message: "Event deleted successfully.", eventId });
+  } catch (error) {
+    await connection.rollback();
+    console.error("[deleteEvent] Error:", error);
+    res.status(500).json({ message: "Internal server error." });
+  } finally {
+    connection.release();
+  }
+}
+
 async getEvents(req: Request, res: Response): Promise<void> {
 const userId   = req.user?.id!;
 const userRole = req.user?.role!;
