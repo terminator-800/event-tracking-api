@@ -26,6 +26,21 @@ interface CreateEventBody {
   fineAmount: number;
 }
 
+interface UpdateEventBody {
+  name: string;
+  date: string;
+  venue: string;
+  duration: "Whole Day" | "Half Day" | "AM Only" | "PM Only";
+  am_time_in?: string | null;
+  am_time_out?: string | null;
+  pm_time_in?: string | null;
+  pm_time_out?: string | null;
+  am_grace_in?: number;
+  pm_grace_in?: number;
+  audience_notes?: string | null;
+  fine_amount?: number;
+}
+
 export class EventController {
 
 private parseYearLevel(yearLevel: string | null | undefined): number | null {
@@ -53,6 +68,21 @@ private to24Hour(time: string | null | undefined): string | null {
 
 private resolveGracePeriod(value: number | null | undefined): number {
   return Math.max(0, Math.floor(value ?? 0));
+}
+
+private normalizeTimeInput(value: string | null | undefined): string | null {
+  if (value == null || String(value).trim() === "") return null;
+  const s = String(value).trim();
+  const sql = /^(\d{1,2}):(\d{2})(?::(\d{2}))?$/.exec(s);
+  if (sql) {
+    const h = Number(sql[1]);
+    const m = Number(sql[2]);
+    const sec = sql[3] != null ? Number(sql[3]) : 0;
+    if (!Number.isFinite(h) || !Number.isFinite(m) || !Number.isFinite(sec)) return null;
+    if (h < 0 || h > 23 || m < 0 || m > 59 || sec < 0 || sec > 59) return null;
+    return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(sec).padStart(2, "0")}`;
+  }
+  return this.to24Hour(s);
 }
 
 private resolveTimings(body: CreateEventBody) {
@@ -222,6 +252,124 @@ async createEvent(req: Request, res: Response): Promise<void> {
     res.status(500).json({ message: "Internal server error." });
   } finally {
     connection.release();
+  }
+}
+
+async updateEvent(req: Request, res: Response): Promise<void> {
+  const userId = req.user?.id;
+  const userRole = req.user?.role;
+  const userDepartmentId = req.user?.department_id ?? null;
+
+  if (!userId) {
+    res.status(401).json({ message: "Unauthorized" });
+    return;
+  }
+
+  const eventId = Number(req.params.id);
+  if (!Number.isFinite(eventId) || eventId <= 0) {
+    res.status(400).json({ message: "Invalid event id." });
+    return;
+  }
+
+  const body: UpdateEventBody = req.body;
+  const name = String(body.name ?? "").trim();
+  const date = String(body.date ?? "").trim();
+  const venue = String(body.venue ?? "").trim();
+  const duration = String(body.duration ?? "").trim() as UpdateEventBody["duration"];
+  const allowedDurations = new Set(["Whole Day", "Half Day", "AM Only", "PM Only"]);
+
+  if (!name || !date || !venue || !duration || !allowedDurations.has(duration)) {
+    res.status(400).json({ message: "Missing or invalid required fields." });
+    return;
+  }
+
+  try {
+    const [rows]: any = await pool.execute(
+      `SELECT 
+        e.id, e.status, e.is_all_departments,
+        MAX(ea.department_id) AS department_id
+       FROM events e
+       LEFT JOIN event_audiences ea ON ea.event_id = e.id
+       WHERE e.id = ?
+       GROUP BY e.id`,
+      [eventId]
+    );
+
+    if (!rows.length) {
+      res.status(404).json({ message: "Event not found." });
+      return;
+    }
+
+    const event = rows[0];
+    const statusKey = String(event.status ?? "").trim().toLowerCase();
+    if (statusKey === "completed" || statusKey === "ongoing" || statusKey === "active") {
+      res.status(403).json({ message: "Completed or ongoing events cannot be edited." });
+      return;
+    }
+
+    const adminRoles: Role[] = ["admin", "csg_president"];
+    if (!adminRoles.includes(userRole!)) {
+      const isAllDepartments = Number(event.is_all_departments) === 1;
+      if (!isAllDepartments) {
+        if (!userDepartmentId || Number(event.department_id) !== Number(userDepartmentId)) {
+          res.status(403).json({ message: "Access denied for editing this event." });
+          return;
+        }
+      }
+    }
+
+    const amIn = this.normalizeTimeInput(body.am_time_in ?? null);
+    const amOut = this.normalizeTimeInput(body.am_time_out ?? null);
+    const pmIn = this.normalizeTimeInput(body.pm_time_in ?? null);
+    const pmOut = this.normalizeTimeInput(body.pm_time_out ?? null);
+    const graceAmIn = this.resolveGracePeriod(body.am_grace_in);
+    const gracePmIn = this.resolveGracePeriod(body.pm_grace_in);
+    const audienceNotes = body.audience_notes != null ? String(body.audience_notes) : null;
+    const fineAmountRaw = body.fine_amount;
+    const fineAmount = Number.isFinite(Number(fineAmountRaw)) ? Math.max(0, Number(fineAmountRaw)) : 0;
+
+    const [result] = await pool.execute<ResultSetHeader>(
+      `UPDATE events
+       SET
+         name = ?,
+         date = ?,
+         venue = ?,
+         duration = ?,
+         am_time_in = ?,
+         am_time_out = ?,
+         pm_time_in = ?,
+         pm_time_out = ?,
+         am_grace_in = ?,
+         pm_grace_in = ?,
+         audience_notes = ?,
+         fine_amount = ?
+       WHERE id = ?`,
+      [
+        name,
+        date,
+        venue,
+        duration,
+        amIn,
+        amOut,
+        pmIn,
+        pmOut,
+        graceAmIn,
+        gracePmIn,
+        audienceNotes,
+        fineAmount,
+        eventId,
+      ]
+    );
+
+    if (result.affectedRows === 0) {
+      res.status(404).json({ message: "Event not found." });
+      return;
+    }
+
+    res.status(200).json({ message: "Event updated successfully.", eventId });
+  } catch (error) {
+    console.error("[updateEvent] Error:", error);
+    res.status(500).json({ message: "Internal server error." });
   }
 }
 
