@@ -5,14 +5,14 @@ let isCronRunInProgress = false;
 
 function getManilaDateTime(): { currentDate: string; currentTime: string } {
       // 🧪 TESTING OVERRIDE
-  return {
-    currentDate: "2026-04-15",
-    currentTime: "18:00:00", 
-  };
-  // const now = new Date();
-  // const manilaLocale = now.toLocaleString("en-CA", { timeZone: "Asia/Manila", hour12: false });
-  // const [currentDate, currentTime] = manilaLocale.split(", ");
-  // return { currentDate, currentTime };
+  // return {
+  //   currentDate: "2026-04-21",
+  //   currentTime: "18:00:00", 
+  // };
+  const now = new Date();
+  const manilaLocale = now.toLocaleString("en-CA", { timeZone: "Asia/Manila", hour12: false });
+  const [currentDate, currentTime] = manilaLocale.split(", ");
+  return { currentDate, currentTime };
 }
 
 async function markOngoingEvents(currentDate: string, currentTime: string): Promise<number> {
@@ -59,7 +59,7 @@ async function generateEndOfEventFines(currentDate: string): Promise<void> {
     `SELECT id, duration, fine_amount, is_all_departments, am_time_out, pm_time_out
      FROM events
      WHERE status = 'Completed'
-       AND date = ?
+       AND date <= ?
        AND fines_generated = FALSE`,
     [currentDate]
   );
