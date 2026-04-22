@@ -1,0 +1,201 @@
+import http from "k6/http";
+import { check, sleep } from "k6";
+import { Counter } from "k6/metrics";
+
+const EXECUTOR_VUS = 100;
+
+export const options = {
+  scenarios: {
+    whole_students: {
+      executor: "shared-iterations",
+      vus: EXECUTOR_VUS,
+      iterations: 2854,
+      maxDuration: "10m",
+    },
+  },
+};
+
+const BASE = "http://localhost:5000";
+const behaviorCounter = new Counter("attendance_behavior_total");
+const requestCounter = new Counter("attendance_requests_total");
+const scheduledTapCounter = new Counter("attendance_scheduled_taps_total");
+const cohortCounter = new Counter("attendance_cohort_total");
+
+function mapCourseKey(course, major) {
+  const c = String(course ?? "").trim().toUpperCase();
+  const m = String(major ?? "").trim().toLowerCase();
+
+  if (c === "BSBA") {
+    if (m === "marketing management") return "BSBA-MM";
+    if (m === "human resource development management") return "BSBA-HRDM";
+    if (m === "financial management") return "BSBA-FM";
+    return "BSBA";
+  }
+
+  if (c === "BSED") {
+    if (m === "english") return "BSED-ENG";
+    if (m === "math") return "BSED-MATH";
+    if (m === "filipino") return "BSED-FILIPINO";
+    return "BSED";
+  }
+
+  return c;
+}
+
+function parseStudentLine(line) {
+  const values = [...line.matchAll(/'([^']*)'/g)].map((m) => m[1]);
+  if (values.length < 2) return null;
+  const studentId = String(values[0] ?? "").trim();
+  const course = String(values[1] ?? "").trim();
+  const major = String(values[2] ?? "").trim();
+  if (!studentId || !course) return null;
+  return { studentId, courseKey: mapCourseKey(course, major) };
+}
+
+function courseKeyToCohortId(courseKey) {
+  return `course-${String(courseKey).toLowerCase().replace(/[^a-z0-9]+/g, "-")}`;
+}
+
+function buildCohortsFromFile() {
+  const raw = open("./students-full.txt");
+  const lines = String(raw ?? "")
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter(Boolean);
+
+  const buckets = new Map();
+  for (const line of lines) {
+    const parsed = parseStudentLine(line);
+    if (!parsed) continue;
+    const id = courseKeyToCohortId(parsed.courseKey);
+    if (!buckets.has(id)) buckets.set(id, []);
+    buckets.get(id).push(parsed);
+  }
+
+  return Array.from(buckets.entries()).map(([id, students]) => ({ id, students }));
+}
+
+// Use all students from k6-tests/students-full.txt
+const STUDENT_COHORTS = buildCohortsFromFile();
+const ALL_STUDENTS = STUDENT_COHORTS.flatMap((cohort) =>
+  cohort.students.map((student) => ({ ...student, cohortId: cohort.id }))
+);
+
+function toMinutes24(time12h) {
+  const [hm, mer] = time12h.trim().split(" ");
+  let [h, m] = hm.split(":").map(Number);
+  const upper = mer.toUpperCase();
+  if (upper === "AM") {
+    if (h === 12) h = 0;
+  } else if (upper === "PM") {
+    if (h !== 12) h += 12;
+  }
+  return h * 60 + m;
+}
+
+function to12Hour(mins) {
+  const h24 = Math.floor(mins / 60) % 24;
+  const m = mins % 60;
+  const mer = h24 >= 12 ? "PM" : "AM";
+  let h12 = h24 % 12;
+  if (h12 === 0) h12 = 12;
+  return `${String(h12).padStart(2, "0")}:${String(m).padStart(2, "0")} ${mer}`;
+}
+
+function minuteRange(start12h, end12h) {
+  const start = toMinutes24(start12h);
+  const end = toMinutes24(end12h);
+  const out = [];
+  for (let t = start; t <= end; t += 1) out.push(to12Hour(t));
+  return out;
+}
+
+const TIME_WINDOWS = {
+  PM_IN: minuteRange("01:00 PM", "03:00 PM"),
+  PM_OUT: minuteRange("05:00 PM", "07:00 PM"),
+};
+
+function minuteFor(windowTimes, salt = 0) {
+  return windowTimes[(__ITER + __VU + salt) % windowTimes.length];
+}
+
+function buildArchetype(archetype) {
+  const pmIn = { kind: "in", at: minuteFor(TIME_WINDOWS.PM_IN, 3) };
+  const pmOut = { kind: "out", at: minuteFor(TIME_WINDOWS.PM_OUT, 4) };
+
+  if (archetype === "perfect") {
+    return { id: "perfect_pm_only", actions: [pmIn, pmOut] };
+  }
+  if (archetype === "late") {
+    const latePmIn = { kind: "in", at: "02:30 PM" };
+    const latePmOut = { kind: "out", at: "06:30 PM" };
+    return { id: "late_pm_only", actions: [latePmIn, latePmOut] };
+  }
+  if (archetype === "no_time_in") {
+    return { id: "no_time_in_out_only_pm", actions: [pmOut] };
+  }
+  if (archetype === "no_time_out") {
+    return { id: "no_time_out_in_only_pm", actions: [pmIn] };
+  }
+  // Absent scenario: no time in and no time out.
+  return { id: "absent_no_in_no_out", actions: [] };
+}
+
+function pickWeightedArchetype() {
+  // Strongly favor attended/late so overall attendance trends high.
+  const roll = Math.random() * 100;
+  if (roll < 70) return "perfect";
+  if (roll < 90) return "late";
+  if (roll < 95) return "no_time_out";
+  if (roll < 98) return "no_time_in";
+  return "absent";
+}
+
+function pickStudentForIteration() {
+  const total = ALL_STUDENTS.length;
+  if (total === 0) return null;
+  const globalIter = __ITER * EXECUTOR_VUS + (__VU - 1);
+  return ALL_STUDENTS[globalIter % total];
+}
+
+function runScenarioForStudent(s, cohortId, archetype, scenario) {
+  behaviorCounter.add(1, { cohort: cohortId, archetype, behavior: scenario.id });
+  if (scenario.actions.length === 0) {
+    return;
+  }
+  for (const action of scenario.actions) {
+    scheduledTapCounter.add(1, { cohort: cohortId, archetype, behavior: scenario.id, at: action.at, kind: action.kind });
+    const res = postAttendance(action, s);
+    requestCounter.add(1, { cohort: cohortId, archetype, behavior: scenario.id, action: action.kind, at: action.at });
+    check(res, {
+      [`${cohortId}:${archetype}:${scenario.id}:${action.kind}:${action.at} accepted status`]: (r) =>
+        isAcceptedStatus(r.status),
+    });
+    sleep(0.05);
+  }
+}
+
+function isAcceptedStatus(status) {
+  return [200, 400, 403, 404, 500].includes(status);
+}
+
+function postAttendance(action, s) {
+  const payload = JSON.stringify({
+    studentId: s.studentId,
+    simulatedTapTime: action.at,
+  });
+
+  return http.post(`${BASE}/attendance/time-in-out`, payload, {
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
+export default function () {
+  const student = pickStudentForIteration();
+  if (!student) return;
+  cohortCounter.add(1, { cohort: student.cohortId });
+  const archetype = pickWeightedArchetype();
+  runScenarioForStudent(student, student.cohortId, archetype, buildArchetype(archetype));
+
+  sleep(0.2);
+}

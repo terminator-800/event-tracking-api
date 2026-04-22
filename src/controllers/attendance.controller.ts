@@ -73,28 +73,6 @@ private async findOngoingEvent(currentDate: string) {
   return (rows as any[])[0] ?? null;
 }
 
-private async findProgramByCourseCode(courseKey: string) {
-  const [code] = courseKey.split('-'); // ✅ cleaner destructuring
-  const majorMap: Record<string, string> = {
-    'BSED-ENG':  'English',
-    'BSED-MATH': 'Math',
-    'BSED-FILIPINO':  'Filipino',
-    'BSBA-MM':   'Marketing Management',
-    'BSBA-HRDM': 'Human Resource Development Management',
-    'BSBA-FM':   'Financial Management',
-  };
-
-  const major = majorMap[courseKey] ?? null;
-
-  const [rows] = await pool.execute(
-    `SELECT id FROM programs 
-     WHERE course_code = ? 
-     AND (major = ? OR (? IS NULL AND (major IS NULL OR major = '')))`,
-    [code, major, major]
-  );
-  return (rows as any[])[0] ?? null;
-}
-
 private async recordTimeIn(studentId: number, eventId: number, column: string, currentTime: string) {
   await pool.execute(
     `INSERT INTO attendance (student_id, event_id, ${column})
@@ -119,6 +97,28 @@ private async findAttendanceRecord(studentId: number, eventId: number) {
     [studentId, eventId]
   );
   return (rows as any[])[0] ?? null;
+}
+
+private async findAttendanceRow(studentId: number, eventId: number) {
+  const [rows] = await pool.execute(
+    `SELECT id, am_time_in, am_time_out, pm_time_in, pm_time_out
+     FROM attendance
+     WHERE student_id = ? AND event_id = ?
+     LIMIT 1`,
+    [studentId, eventId]
+  );
+  return (rows as any[])[0] ?? null;
+}
+
+private inferAttendanceKindFromSlot(
+  attendance: any,
+  slot: "AM" | "PM"
+): "in" | "out" {
+  if (!attendance) return "in";
+  if (slot === "AM") {
+    return attendance.am_time_in ? "out" : "in";
+  }
+  return attendance.pm_time_in ? "out" : "in";
 }
 
 private async createLateFine(studentId: number, eventId: number, attendanceId: number, reason: string, amount: number) {
@@ -177,22 +177,15 @@ private async isStudentInEventAudience(studentId: number, eventId: number, isAll
 }
 
 public recordAttendance = async (req: Request, res: Response): Promise<void> => {
-  const { studentId, attendanceKind, courseKey, simulatedTapTime, simulatedDate } = req.body;
+  const { studentId, simulatedTapTime, simulatedDate } = req.body;
   console.log("[AttendanceController] Received attendance record request:", {
     studentId,
-    attendanceKind,
-    courseKey,
     simulatedTapTime,
     simulatedDate,
   });
 
-  if (!studentId || !attendanceKind || !courseKey) {
-    res.status(400).json({ message: "studentId, attendanceKind, and courseKey are required." });
-    return;
-  }
-
-  if (attendanceKind !== "in" && attendanceKind !== "out") {
-    res.status(400).json({ message: "attendanceKind must be 'in' or 'out'." });
+  if (!studentId) {
+    res.status(400).json({ message: "studentId is required." });
     return;
   }
 
@@ -220,16 +213,12 @@ public recordAttendance = async (req: Request, res: Response): Promise<void> => 
       return;
     }
 
-    const program = await this.findProgramByCourseCode(courseKey);
-    if (!program) {
-      res.status(404).json({ message: "Program not found." });
-      return;
-    }
-
     const slot = this.determineSlot(currentTime, event.pm_time_in);
     const isAM = slot === "AM";
+    const attendanceRow = await this.findAttendanceRow(student.id, event.id);
+    const resolvedAttendanceKind = this.inferAttendanceKindFromSlot(attendanceRow, slot);
 
-    if (attendanceKind === "in") {
+    if (resolvedAttendanceKind === "in") {
       const column = isAM ? "am_time_in" : "pm_time_in";
       await this.recordTimeIn(student.id, event.id, column, currentTime);
 
@@ -255,7 +244,7 @@ public recordAttendance = async (req: Request, res: Response): Promise<void> => 
       await this.recordTimeOut(student.id, event.id, column, currentTime);
     }
 
-    res.status(200).json({ message: `Attendance ${attendanceKind} recorded successfully.` });
+    res.status(200).json({ message: `Attendance ${resolvedAttendanceKind} recorded successfully.` });
 
   } catch (error) {
     console.error("[AttendanceController] Error:", error);

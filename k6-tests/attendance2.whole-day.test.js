@@ -2,9 +2,17 @@ import http from "k6/http";
 import { check, sleep } from "k6";
 import { Counter } from "k6/metrics";
 
+const EXECUTOR_VUS = 100;
+
 export const options = {
-  vus: 20,
-  duration: "30s",
+  scenarios: {
+    whole_students: {
+      executor: "shared-iterations",
+      vus: EXECUTOR_VUS,
+      iterations: 2854,
+      maxDuration: "15m",
+    },
+  },
 };
 
 const BASE = "http://localhost:5000";
@@ -13,102 +21,65 @@ const requestCounter = new Counter("attendance_requests_total");
 const scheduledTapCounter = new Counter("attendance_scheduled_taps_total");
 const cohortCounter = new Counter("attendance_cohort_total");
 
-// use real student IDs + courseKey values that exist in your DB
-const STUDENT_COHORTS = [
-  {
-    id: "cit-bsit",
-    students: [
-      { studentId: "202100641", courseKey: "BSIT" },
-      { studentId: "2022006503", courseKey: "BSIT" },
-      { studentId: "2021002091", courseKey: "BSIT" },
-      { studentId: "2022003713", courseKey: "BSIT" },
-    ],
-  },
-  {
-    id: "ceas-beed",
-    students: [
-      { studentId: "202202361", courseKey: "BEED" },
-      { studentId: "202519640", courseKey: "BEED" },
-      { studentId: "2020001133", courseKey: "BEED" },
-      { studentId: "2020001259", courseKey: "BEED" },
-      { studentId: "2020001261", courseKey: "BEED" },
-    ],
-  },
-  {
-    id: "ceas-bsed-eng",
-    students: [
-      { studentId: "2021003336", courseKey: "BSED-ENG" },
-      { studentId: "2021003406", courseKey: "BSED-ENG" },
-    ],
-  },
-  {
-    id: "ceas-bsed-math",
-    students: [
-      { studentId: "2021003223", courseKey: "BSED-MATH" },
-      { studentId: "2022003499", courseKey: "BSED-MATH" },
-      { studentId: "2022003683", courseKey: "BSED-MATH" },
-      { studentId: "2022003709", courseKey: "BSED-MATH" },
-    ],
-  },
-  {
-    id: "ceas-bsed-filipino",
-    students: [
-      { studentId: "2025018576", courseKey: "BSED-FILIPINO" },
-      { studentId: "2022003530", courseKey: "BSED-FILIPINO" },
-      { studentId: "2022003567", courseKey: "BSED-FILIPINO" },
-      { studentId: "2022003657", courseKey: "BSED-FILIPINO" },
-      { studentId: "2022003667", courseKey: "BSED-FILIPINO" },
-    ],
-  },
-  {
-    id: "ccje-bscrim",
-    students: [
-      { studentId: "2021002341", courseKey: "BSCRIM" },
-      { studentId: "2022003941", courseKey: "BSCRIM" },
-      { studentId: "2022004123", courseKey: "BSCRIM" },
-      { studentId: "2022004339", courseKey: "BSCRIM" },
-    ],
-  },
-  {
-    id: "cba-bsba-mm",
-    students: [
-      { studentId: "202100487", courseKey: "BSBA-MM" },
-      { studentId: "2022003550", courseKey: "BSBA-MM" },
-      { studentId: "2022003600", courseKey: "BSBA-MM" },
-      { studentId: "2022003693", courseKey: "BSBA-MM" },
-      { studentId: "2022003849", courseKey: "BSBA-MM" },
-    ],
-  },
-  {
-    id: "cba-bsba-hrdm",
-    students: [
-      { studentId: "2022009279", courseKey: "BSBA-HRDM" },
-      { studentId: "2021002835", courseKey: "BSBA-HRDM" },
-      { studentId: "2021003433", courseKey: "BSBA-HRDM" },
-      { studentId: "2022003596", courseKey: "BSBA-HRDM" },
-      { studentId: "2022003935", courseKey: "BSBA-HRDM" },
-    ],
-  },
-  {
-    id: "cba-bsba-fm",
-    students: [
-      { studentId: "2022004958", courseKey: "BSBA-FM" },
-      { studentId: "2022003538", courseKey: "BSBA-FM" },
-      { studentId: "2022003569", courseKey: "BSBA-FM" },
-      { studentId: "2022003728", courseKey: "BSBA-FM" },
-      { studentId: "2022003793", courseKey: "BSBA-FM" },
-    ],
-  },
-  {
-    id: "chm-bshm",
-    students: [
-      { studentId: "202100995", courseKey: "BSHM" },
-      { studentId: "2022006259", courseKey: "BSHM" },
-      { studentId: "2023011849", courseKey: "BSHM" },
-      { studentId: "2023011576", courseKey: "BSHM" },
-    ],
-  },
-];
+function mapCourseKey(course, major) {
+  const c = String(course ?? "").trim().toUpperCase();
+  const m = String(major ?? "").trim().toLowerCase();
+
+  if (c === "BSBA") {
+    if (m === "marketing management") return "BSBA-MM";
+    if (m === "human resource development management") return "BSBA-HRDM";
+    if (m === "financial management") return "BSBA-FM";
+    return "BSBA";
+  }
+
+  if (c === "BSED") {
+    if (m === "english") return "BSED-ENG";
+    if (m === "math") return "BSED-MATH";
+    if (m === "filipino") return "BSED-FILIPINO";
+    return "BSED";
+  }
+
+  return c;
+}
+
+function parseStudentLine(line) {
+  const values = [...line.matchAll(/'([^']*)'/g)].map((m) => m[1]);
+  if (values.length < 2) return null;
+  const studentId = String(values[0] ?? "").trim();
+  const course = String(values[1] ?? "").trim();
+  const major = String(values[2] ?? "").trim();
+  if (!studentId || !course) return null;
+  return { studentId, courseKey: mapCourseKey(course, major) };
+}
+
+function courseKeyToCohortId(courseKey) {
+  return `course-${String(courseKey).toLowerCase().replace(/[^a-z0-9]+/g, "-")}`;
+}
+
+function buildCohortsFromFile() {
+  const raw = open("./students-full.txt");
+  const lines = String(raw ?? "")
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter(Boolean);
+
+  const buckets = new Map();
+  for (const line of lines) {
+    const parsed = parseStudentLine(line);
+    if (!parsed) continue;
+    const id = courseKeyToCohortId(parsed.courseKey);
+    if (!buckets.has(id)) buckets.set(id, []);
+    buckets.get(id).push(parsed);
+  }
+
+  return Array.from(buckets.entries()).map(([id, students]) => ({ id, students }));
+}
+
+// Use all students from k6-tests/students-full.txt
+const STUDENT_COHORTS = buildCohortsFromFile();
+const ALL_STUDENTS = STUDENT_COHORTS.flatMap((cohort) =>
+  cohort.students.map((student) => ({ ...student, cohortId: cohort.id }))
+);
 
 /**
  * Backend still determines official AM/PM and late checks by server time.
@@ -176,13 +147,31 @@ function buildArchetype(archetype) {
     const latePmOut = { kind: "out", at: "06:30 PM" };
     return { id: "late_fixed_schedule", actions: [lateAmIn, lateAmOut, latePmIn, latePmOut] };
   }
+  if (archetype === "no_time_in") {
+    return { id: "no_time_in_out_only", actions: [amOut, pmOut] };
+  }
+  if (archetype === "no_time_out") {
+    return { id: "no_time_out_in_only", actions: [amIn, pmIn] };
+  }
   // Absent scenario: no time in and no time out.
   return { id: "absent_no_in_no_out", actions: [] };
 }
 
-function pickStudentFromCohort(cohort) {
-  const idx = Math.floor(Math.random() * cohort.students.length);
-  return cohort.students[idx];
+function pickWeightedArchetype() {
+  // Strongly favor attended/late so overall attendance trends high.
+  const roll = Math.random() * 100;
+  if (roll < 70) return "perfect";
+  if (roll < 90) return "late";
+  if (roll < 95) return "no_time_out";
+  if (roll < 98) return "no_time_in";
+  return "absent";
+}
+
+function pickStudentForIteration() {
+  const total = ALL_STUDENTS.length;
+  if (total === 0) return null;
+  const globalIter = __ITER * EXECUTOR_VUS + (__VU - 1);
+  return ALL_STUDENTS[globalIter % total];
 }
 
 function runScenarioForStudent(s, cohortId, archetype, scenario) {
@@ -198,7 +187,7 @@ function runScenarioForStudent(s, cohortId, archetype, scenario) {
       [`${cohortId}:${archetype}:${scenario.id}:${action.kind}:${action.at} accepted status`]: (r) =>
         isAcceptedStatus(r.status),
     });
-    sleep(0.2);
+    sleep(0.05);
   }
 }
 
@@ -210,8 +199,6 @@ function isAcceptedStatus(status) {
 function postAttendance(action, s) {
   const payload = JSON.stringify({
     studentId: s.studentId,
-    attendanceKind: action.kind, // "in" or "out"
-    courseKey: s.courseKey,
     simulatedTapTime: action.at,
   });
 
@@ -221,12 +208,11 @@ function postAttendance(action, s) {
 }
 
 export default function () {
-  const cohort = STUDENT_COHORTS[(__ITER + __VU) % STUDENT_COHORTS.length];
-  cohortCounter.add(1, { cohort: cohort.id });
+  const student = pickStudentForIteration();
+  if (!student) return;
+  cohortCounter.add(1, { cohort: student.cohortId });
+  const archetype = pickWeightedArchetype();
+  runScenarioForStudent(student, student.cohortId, archetype, buildArchetype(archetype));
 
-  runScenarioForStudent(pickStudentFromCohort(cohort), cohort.id, "perfect", buildArchetype("perfect"));
-  runScenarioForStudent(pickStudentFromCohort(cohort), cohort.id, "late", buildArchetype("late"));
-  runScenarioForStudent(pickStudentFromCohort(cohort), cohort.id, "absent", buildArchetype("absent"));
-
-  sleep(1);
+  sleep(0.2);
 }

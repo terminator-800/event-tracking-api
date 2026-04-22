@@ -5,14 +5,14 @@ let isCronRunInProgress = false;
 
 function getManilaDateTime(): { currentDate: string; currentTime: string } {
       // 🧪 TESTING OVERRIDE
-  // return {
-  //   currentDate: "2026-04-21",
-  //   currentTime: "18:00:00", 
-  // };
-  const now = new Date();
-  const manilaLocale = now.toLocaleString("en-CA", { timeZone: "Asia/Manila", hour12: false });
-  const [currentDate, currentTime] = manilaLocale.split(", ");
-  return { currentDate, currentTime };
+  return {
+    currentDate: "2026-04-22",
+    currentTime: "18:00:00", 
+  };
+  // const now = new Date();
+  // const manilaLocale = now.toLocaleString("en-CA", { timeZone: "Asia/Manila", hour12: false });
+  // const [currentDate, currentTime] = manilaLocale.split(", ");
+  // return { currentDate, currentTime };
 }
 
 async function markOngoingEvents(currentDate: string, currentTime: string): Promise<number> {
