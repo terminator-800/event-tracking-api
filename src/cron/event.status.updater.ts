@@ -21,7 +21,8 @@ async function markOngoingEvents(currentDate: string, currentTime: string): Prom
      SET status = 'Ongoing'
      WHERE date = ?
        AND status = 'Upcoming'
-       AND am_time_in <= ?`,
+       AND COALESCE(am_time_in, pm_time_in) IS NOT NULL
+       AND COALESCE(am_time_in, pm_time_in) <= ?`,
     [currentDate, currentTime]
   );
   return (result as any).affectedRows;
