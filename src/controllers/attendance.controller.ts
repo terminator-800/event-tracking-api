@@ -28,6 +28,13 @@ private parseSimulatedDate(raw: unknown): string | null {
   return /^\d{4}-\d{2}-\d{2}$/.test(v) ? v : null;
 }
 
+private parseAttendanceKind(raw: unknown): "in" | "out" | null {
+  if (raw == null) return null;
+  const v = String(raw).trim().toLowerCase();
+  if (v === "in" || v === "out") return v;
+  return null;
+}
+
 private getManilaDateTime(simulated?: { date?: unknown; time?: unknown }): { currentDate: string; currentTime: string } {
   if (process.env.NODE_ENV !== "production") {
     const simulatedDate = this.parseSimulatedDate(simulated?.date);
@@ -44,10 +51,15 @@ private getManilaDateTime(simulated?: { date?: unknown; time?: unknown }): { cur
   }
 
   // 🧪 TESTING OVERRIDE (default fallback while testing)
-  return {
-    currentDate: "2026-04-15",
-    currentTime: "13:50:00",
-  };
+  // return {
+  //   currentDate: "2026-04-23",
+  //   currentTime: "11:45:00",
+  // };
+
+  const now = new Date();
+  const manilaLocale = now.toLocaleString("en-CA", { timeZone: "Asia/Manila", hour12: false });
+  const [currentDate, currentTime] = manilaLocale.split(", ");
+  return { currentDate, currentTime };
 }
 
 private async findStudentByStudentId(studentId: string) {
@@ -86,8 +98,8 @@ private async recordTimeOut(studentId: number, eventId: number, column: string, 
   await pool.execute(
     `INSERT INTO attendance (student_id, event_id, ${column})
       VALUES (?, ?, ?)
-      ON DUPLICATE KEY UPDATE ${column} = ?`,
-    [studentId, eventId, currentTime, currentTime]
+      ON DUPLICATE KEY UPDATE ${column} = IF(${column} IS NULL, VALUES(${column}), ${column})`,
+    [studentId, eventId, currentTime]
   );
 }
 
@@ -121,6 +133,22 @@ private inferAttendanceKindFromSlot(
   return attendance.pm_time_in ? "out" : "in";
 }
 
+private getSlotAttendanceStatus(
+  attendance: any,
+  slot: "AM" | "PM"
+): { timeInDone: boolean; timeOutDone: boolean } {
+  if (slot === "AM") {
+    return {
+      timeInDone: Boolean(attendance?.am_time_in),
+      timeOutDone: Boolean(attendance?.am_time_out),
+    };
+  }
+  return {
+    timeInDone: Boolean(attendance?.pm_time_in),
+    timeOutDone: Boolean(attendance?.pm_time_out),
+  };
+}
+
 private async createLateFine(studentId: number, eventId: number, attendanceId: number, reason: string, amount: number) {
   await pool.execute(
     `INSERT IGNORE INTO fines (student_id, event_id, attendance_id, reason, amount)
@@ -139,6 +167,12 @@ private isLateArrival(scheduledIn: string, graceMinutes: number, currentTime: st
 
 private determineSlot(currentTime: string, pmTimeIn: string): "AM" | "PM" {
   return currentTime < (pmTimeIn ?? "12:00:00") ? "AM" : "PM";
+}
+
+private canRecordTimeOut(slot: "AM" | "PM", event: any, currentTime: string): boolean {
+  const scheduledOut = slot === "AM" ? event?.am_time_out : event?.pm_time_out;
+  if (!scheduledOut) return true;
+  return currentTime >= scheduledOut;
 }
 
 private async isStudentInEventAudience(studentId: number, eventId: number, isAllDepartments: boolean): Promise<boolean> {
@@ -177,11 +211,13 @@ private async isStudentInEventAudience(studentId: number, eventId: number, isAll
 }
 
 public recordAttendance = async (req: Request, res: Response): Promise<void> => {
-  const { studentId, simulatedTapTime, simulatedDate } = req.body;
+  const { studentId, simulatedTapTime, simulatedDate, attendanceKind } = req.body;
+  const requestedKind = this.parseAttendanceKind(attendanceKind);
   console.log("[AttendanceController] Received attendance record request:", {
     studentId,
     simulatedTapTime,
     simulatedDate,
+    attendanceKind: requestedKind,
   });
 
   if (!studentId) {
@@ -216,7 +252,17 @@ public recordAttendance = async (req: Request, res: Response): Promise<void> => 
     const slot = this.determineSlot(currentTime, event.pm_time_in);
     const isAM = slot === "AM";
     const attendanceRow = await this.findAttendanceRow(student.id, event.id);
-    const resolvedAttendanceKind = this.inferAttendanceKindFromSlot(attendanceRow, slot);
+    const { timeInDone, timeOutDone } = this.getSlotAttendanceStatus(attendanceRow, slot);
+    const inferredKind = this.inferAttendanceKindFromSlot(attendanceRow, slot);
+    const resolvedAttendanceKind = requestedKind ?? inferredKind;
+
+    if (requestedKind === "in" && inferredKind === "out") {
+      res.status(409).json({
+        status: "already_submitted",
+        message: `${slot} time in is already recorded for this student.`,
+      });
+      return;
+    }
 
     if (resolvedAttendanceKind === "in") {
       const column = isAM ? "am_time_in" : "pm_time_in";
@@ -240,6 +286,23 @@ public recordAttendance = async (req: Request, res: Response): Promise<void> => 
       }
 
     } else {
+      if (timeOutDone) {
+        res.status(409).json({
+          status: "already_submitted",
+          message: `${slot} time out is already recorded for this student.`,
+        });
+        return;
+      }
+
+      const canTimeOutNow = this.canRecordTimeOut(slot, event, currentTime);
+      if (!canTimeOutNow) {
+        res.status(200).json({
+          status: "time_out_not_active",
+          message: `${slot} time out is not active yet. Please tap again during the time out schedule.`,
+        });
+        return;
+      }
+
       const column = isAM ? "am_time_out" : "pm_time_out";
       await this.recordTimeOut(student.id, event.id, column, currentTime);
     }

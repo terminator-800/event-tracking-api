@@ -62,17 +62,19 @@ async function buildSummaryPayload(rows: ScopedEventRow[]) {
   return { events: out, generatedAt: new Date().toISOString() };
 }
 
-function studentAttended(duration: string, row: { am_time_in: string | null; pm_time_in: string | null }): boolean {
-  switch (duration) {
-    case "Whole Day":
-      return row.am_time_in != null && row.pm_time_in != null;
-    case "AM Only":
-      return row.am_time_in != null;
-    case "PM Only":
-      return row.pm_time_in != null;
-    default:
-      return row.am_time_in != null || row.pm_time_in != null;
-  }
+function studentAttended(_duration: string, row: {
+  am_time_in: string | null;
+  am_time_out: string | null;
+  pm_time_in: string | null;
+  pm_time_out: string | null;
+}): boolean {
+  // Attendance list rule: any attendance record in any slot counts as attended.
+  return (
+    row.am_time_in != null ||
+    row.am_time_out != null ||
+    row.pm_time_in != null ||
+    row.pm_time_out != null
+  );
 }
 
 export class AttendancePageController {

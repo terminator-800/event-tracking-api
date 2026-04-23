@@ -6,8 +6,8 @@ let isCronRunInProgress = false;
 function getManilaDateTime(): { currentDate: string; currentTime: string } {
       // 🧪 TESTING OVERRIDE
   return {
-    currentDate: "2026-04-22",
-    currentTime: "18:00:00", 
+    currentDate: "2026-04-23",
+    currentTime: "08:00:00", 
   };
   // const now = new Date();
   // const manilaLocale = now.toLocaleString("en-CA", { timeZone: "Asia/Manila", hour12: false });
