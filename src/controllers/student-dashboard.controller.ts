@@ -62,7 +62,13 @@ export class StudentDashboardController {
     const finePhp = row.fine_php != null ? Number(row.fine_php) : 0;
 
     if (sessionType !== "Whole day") {
-      const useAm = sessionType === "AM Only";
+      const hasAmData = row.am_time_in != null || row.am_time_out != null;
+      const hasPmData = row.pm_time_in != null || row.pm_time_out != null;
+      let useAm = sessionType === "AM Only";
+      // If the expected side is empty but the other side has data, fallback so
+      // "Attended" rows do not show all "No record" times in history.
+      if (useAm && !hasAmData && hasPmData) useAm = false;
+      if (!useAm && !hasPmData && hasAmData) useAm = true;
       const ti = useAm ? row.am_time_in : row.pm_time_in;
       const to = useAm ? row.am_time_out : row.pm_time_out;
       return {
