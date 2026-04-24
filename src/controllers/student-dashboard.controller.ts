@@ -25,7 +25,7 @@ export interface DashboardStudentListItem {
 export interface DashboardEventHistoryItem {
   name: string;
   date: string;
-  sessionType: "Whole day" | "Half day";
+  sessionType: "Whole day" | "AM Only" | "PM Only";
   attended: boolean;
   amTimeIn?: string | null;
   amTimeOut?: string | null;
@@ -48,9 +48,12 @@ export interface DashboardStudentDetail extends DashboardStudentListItem {
 }
 
 export class StudentDashboardController {
-  private durationToSessionType(d: string): "Whole day" | "Half day" {
+  private durationToSessionType(d: string): "Whole day" | "AM Only" | "PM Only" {
     if (d === "Whole Day") return "Whole day";
-    return "Half day";
+    if (d === "AM Only") return "AM Only";
+    if (d === "PM Only") return "PM Only";
+    // Backward compatibility for any legacy DB value.
+    return "AM Only";
   }
 
   private mapHistoryRow(row: EventHistoryDbRow): DashboardEventHistoryItem {
@@ -58,14 +61,14 @@ export class StudentDashboardController {
     const attended = row.attended === 1;
     const finePhp = row.fine_php != null ? Number(row.fine_php) : 0;
 
-    if (sessionType === "Half day") {
-      const useAm = row.am_time_in != null || row.am_time_out != null;
+    if (sessionType !== "Whole day") {
+      const useAm = sessionType === "AM Only";
       const ti = useAm ? row.am_time_in : row.pm_time_in;
       const to = useAm ? row.am_time_out : row.pm_time_out;
       return {
         name: row.name,
         date: row.date,
-        sessionType: "Half day",
+        sessionType,
         attended,
         timeIn: sqlTimeTo12Hour(ti),
         timeOut: sqlTimeTo12Hour(to),

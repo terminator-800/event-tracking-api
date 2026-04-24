@@ -6,7 +6,7 @@ let isCronRunInProgress = false;
 function getManilaDateTime(): { currentDate: string; currentTime: string } {
       // 🧪 TESTING OVERRIDE
   return {
-    currentDate: "2026-04-23",
+    currentDate: "2026-04-24",
     currentTime: "08:00:00", 
   };
   // const now = new Date();
