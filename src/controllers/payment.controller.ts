@@ -1,0 +1,119 @@
+import { Request, Response } from "express";
+import { Role } from "../types/express";
+import { PaymentService } from "./services/payment.service";
+
+const paymentService = new PaymentService();
+
+export class PaymentController {
+  async list(req: Request, res: Response): Promise<void> {
+    try {
+      const role = req.user?.role as Role | undefined;
+      const departmentId = req.user?.department_id ?? null;
+      if (!role) {
+        res.status(401).json({ message: "Unauthorized" });
+        return;
+      }
+      const data = await paymentService.listPaymentStudents(role, departmentId);
+      res.status(200).json(data);
+    } catch (error) {
+      console.error("[PaymentController.list]", error);
+      res.status(500).json({ message: "Internal server error." });
+    }
+  }
+
+  async record(req: Request, res: Response): Promise<void> {
+    try {
+      const role = req.user?.role as Role | undefined;
+      const departmentId = req.user?.department_id ?? null;
+      const userId = req.user?.id;
+      if (!role || !userId) {
+        res.status(401).json({ message: "Unauthorized" });
+        return;
+      }
+
+      const studentId = String(req.body?.studentId ?? "").trim();
+      const amountPaid = Number(req.body?.amountPaid ?? 0);
+      const paymentMethod = req.body?.paymentMethod;
+      const remarks = req.body?.remarks;
+      if (!studentId) {
+        res.status(400).json({ message: "studentId is required." });
+        return;
+      }
+
+      const result = await paymentService.recordPayment({
+        encodedByUserId: userId,
+        role,
+        departmentId,
+        publicStudentId: studentId,
+        amountPaid,
+        paymentMethod,
+        remarks,
+      });
+      if (!result.ok) {
+        res.status(result.status).json({ message: result.message });
+        return;
+      }
+      res.status(201).json(result);
+    } catch (error) {
+      console.error("[PaymentController.record]", error);
+      res.status(500).json({ message: "Internal server error." });
+    }
+  }
+
+  async updateFineAmount(req: Request, res: Response): Promise<void> {
+    try {
+      const role = req.user?.role as Role | undefined;
+      const departmentId = req.user?.department_id ?? null;
+      if (!role) {
+        res.status(401).json({ message: "Unauthorized" });
+        return;
+      }
+      const fineId = Number(req.params.fineId);
+      const amount = Number(req.body?.amount ?? 0);
+      if (!Number.isFinite(fineId) || fineId <= 0) {
+        res.status(400).json({ message: "Invalid fine id." });
+        return;
+      }
+      const result = await paymentService.updateFineAmount({ role, departmentId, fineId, amount });
+      if (!result.ok) {
+        res.status(result.status).json({ message: result.message });
+        return;
+      }
+      res.status(200).json(result);
+    } catch (error) {
+      console.error("[PaymentController.updateFineAmount]", error);
+      res.status(500).json({ message: "Internal server error." });
+    }
+  }
+
+  async setStudentBalance(req: Request, res: Response): Promise<void> {
+    try {
+      const role = req.user?.role as Role | undefined;
+      const departmentId = req.user?.department_id ?? null;
+      if (!role) {
+        res.status(401).json({ message: "Unauthorized" });
+        return;
+      }
+      const studentId = String(req.params.studentId ?? "").trim();
+      const targetBalance = Number(req.body?.targetBalance ?? 0);
+      if (!studentId) {
+        res.status(400).json({ message: "Invalid student id." });
+        return;
+      }
+      const result = await paymentService.setStudentBalance({
+        role,
+        departmentId,
+        publicStudentId: studentId,
+        targetBalance,
+      });
+      if (!result.ok) {
+        res.status(result.status).json({ message: result.message });
+        return;
+      }
+      res.status(200).json(result);
+    } catch (error) {
+      console.error("[PaymentController.setStudentBalance]", error);
+      res.status(500).json({ message: "Internal server error." });
+    }
+  }
+}
