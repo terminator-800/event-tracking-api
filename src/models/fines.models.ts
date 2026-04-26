@@ -18,7 +18,8 @@ export async function createFinesTable(): Promise<void> {
           'Missed PM Time Out'
         ) NOT NULL,
         amount DECIMAL(10,2) NOT NULL,
-        status         ENUM('Unpaid', 'Paid', 'Waived') NOT NULL DEFAULT 'Unpaid',
+        paid_amount     DECIMAL(10,2) NOT NULL DEFAULT 0.00,
+        status         ENUM('Unpaid', 'Partial', 'Paid', 'Waived') NOT NULL DEFAULT 'Unpaid',
         created_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         updated_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
         UNIQUE KEY unique_fine (student_id, event_id, reason),
