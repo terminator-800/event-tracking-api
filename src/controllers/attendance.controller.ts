@@ -1,5 +1,6 @@
   import { Request, Response } from "express";
   import { pool } from "../config/db";
+  import { getManilaDateTime } from "../utils/manilaDateTime";
 
 export class AttendanceController {
 
@@ -36,30 +37,12 @@ private parseAttendanceKind(raw: unknown): "in" | "out" | null {
 }
 
 private getManilaDateTime(simulated?: { date?: unknown; time?: unknown }): { currentDate: string; currentTime: string } {
-  if (process.env.NODE_ENV !== "production") {
-    const simulatedDate = this.parseSimulatedDate(simulated?.date);
-    const simulatedTime = this.parseSimulatedTime(simulated?.time);
-    if (simulatedDate || simulatedTime) {
-      const now = new Date();
-      const manilaLocale = now.toLocaleString("en-CA", { timeZone: "Asia/Manila", hour12: false });
-      const [currentDateRaw, currentTimeRaw] = manilaLocale.split(", ");
-      return {
-        currentDate: simulatedDate ?? currentDateRaw,
-        currentTime: simulatedTime ?? currentTimeRaw,
-      };
-    }
-  }
-
-  // 🧪 TESTING OVERRIDE (default fallback while testing)
-  // return {
-  //   currentDate: "2026-04-23",
-  //   currentTime: "11:45:00",
-  // };
-
-  const now = new Date();
-  const manilaLocale = now.toLocaleString("en-CA", { timeZone: "Asia/Manila", hour12: false });
-  const [currentDate, currentTime] = manilaLocale.split(", ");
-  return { currentDate, currentTime };
+  const simulatedDate = this.parseSimulatedDate(simulated?.date);
+  const simulatedTime = this.parseSimulatedTime(simulated?.time);
+  return getManilaDateTime({
+    overrideDate: simulatedDate,
+    overrideTime: simulatedTime,
+  });
 }
 
 private async findStudentByStudentId(studentId: string) {

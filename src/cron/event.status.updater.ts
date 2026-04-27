@@ -1,19 +1,8 @@
 import cron from 'node-cron';
 import { pool } from "../config/db";
+import { getManilaDateTime } from "../utils/manilaDateTime";
 
 let isCronRunInProgress = false;
-
-function getManilaDateTime(): { currentDate: string; currentTime: string } {
-      // 🧪 TESTING OVERRIDE
-  return {
-    currentDate: "2026-04-24",
-    currentTime: "08:00:00", 
-  };
-  // const now = new Date();
-  // const manilaLocale = now.toLocaleString("en-CA", { timeZone: "Asia/Manila", hour12: false });
-  // const [currentDate, currentTime] = manilaLocale.split(", ");
-  // return { currentDate, currentTime };
-}
 
 async function markOngoingEvents(currentDate: string, currentTime: string): Promise<number> {
   const [result] = await pool.execute(
