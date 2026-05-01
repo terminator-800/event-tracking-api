@@ -1,7 +1,10 @@
 import { Request, Response } from "express";
 import { sqlTimeTo12Hour } from "../utils/sqlTime";
 import { toYmdDateString } from "../utils/sqlDate";
+import { Role } from "../types/express";
 import {
+  ADMIN_ROLES,
+  AttendanceRosterDepartmentScope,
   countAttendedStudents,
   countEligibleStudents,
   selectScopedEvents,
@@ -9,6 +12,16 @@ import {
   ScopedEventRow,
   userCanAccessEvent,
 } from "../repositories/attendance-page.repository";
+
+/** Governors (any non–institution-wide role with a department) see only that department’s students on rosters. */
+function rosterDepartmentScopeFromRequest(
+  role: Role,
+  departmentId: number | null | undefined,
+): AttendanceRosterDepartmentScope {
+  if (ADMIN_ROLES.includes(role)) return null;
+  if (departmentId == null || !Number.isFinite(Number(departmentId))) return null;
+  return Number(departmentId);
+}
 
 function mapStatus(db: string): "upcoming" | "ongoing" | "completed" | "cancelled" {
   const s = String(db || "").toLowerCase();
@@ -32,11 +45,14 @@ function durationToSessionType(row: ScopedEventRow): "whole_day" | "am" | "pm" {
   return "whole_day";
 }
 
-async function buildSummaryPayload(rows: ScopedEventRow[]) {
+async function buildSummaryPayload(
+  rows: ScopedEventRow[],
+  scopeDepartmentId: AttendanceRosterDepartmentScope,
+) {
   const out = [];
   for (const e of rows) {
-    const total = await countEligibleStudents(e.id);
-    const attended = await countAttendedStudents(e.id, e.duration);
+    const total = await countEligibleStudents(e.id, scopeDepartmentId);
+    const attended = await countAttendedStudents(e.id, e.duration, scopeDepartmentId);
     const st = mapStatus(e.status);
     let absent = 0;
     if (st === "upcoming") {
@@ -86,8 +102,9 @@ export class AttendancePageController {
       return;
     }
     try {
+      const scopeDept = rosterDepartmentScopeFromRequest(userRole, req.user?.department_id);
       const rows = await selectScopedEvents(userRole, userId);
-      const payload = await buildSummaryPayload(rows);
+      const payload = await buildSummaryPayload(rows, scopeDept);
       res.status(200).json(payload);
     } catch (err) {
       console.error("[AttendancePageController.list]", err);
@@ -108,6 +125,7 @@ export class AttendancePageController {
       return;
     }
     try {
+      const scopeDept = rosterDepartmentScopeFromRequest(userRole, req.user?.department_id);
       const rows = await selectScopedEvents(userRole, userId);
       const eventRow = rows.find((r) => r.id === eventId);
       if (!eventRow) {
@@ -121,12 +139,12 @@ export class AttendancePageController {
         return;
       }
 
-      const total = await countEligibleStudents(eventId);
-      const attendedCount = await countAttendedStudents(eventId, eventRow.duration);
+      const total = await countEligibleStudents(eventId, scopeDept);
+      const attendedCount = await countAttendedStudents(eventId, eventRow.duration, scopeDept);
       const st = mapStatus(eventRow.status);
       const absent = st === "upcoming" ? 0 : Math.max(0, total - attendedCount);
 
-      const studentRows = await selectStudentsForEventDetail(eventId);
+      const studentRows = await selectStudentsForEventDetail(eventId, scopeDept);
       const students = studentRows.map((s) => {
         const ok = studentAttended(eventRow.duration, s);
         const fine = Number(s.fine_total ?? 0);
@@ -191,8 +209,9 @@ export class AttendancePageController {
 
     const send = async () => {
       try {
+        const scopeDept = rosterDepartmentScopeFromRequest(userRole, req.user?.department_id);
         const rows = await selectScopedEvents(userRole, userId);
-        const payload = await buildSummaryPayload(rows);
+        const payload = await buildSummaryPayload(rows, scopeDept);
         res.write(`data: ${JSON.stringify(payload)}\n\n`);
       } catch (err) {
         console.error("[AttendancePageController.stream]", err);

@@ -22,7 +22,10 @@ export interface ScopedEventRow extends RowDataPacket {
   audiences: string | null;
 }
 
-const ADMIN_ROLES: Role[] = ["admin", "csg_president"];
+export const ADMIN_ROLES: Role[] = ["admin", "csg_president"];
+
+/** `null` = institution-wide roster (admins/president). Otherwise restrict to programs in this department. */
+export type AttendanceRosterDepartmentScope = number | null;
 
 export async function selectScopedEvents(userRole: Role, userId: number): Promise<ScopedEventRow[]> {
   if (ADMIN_ROLES.includes(userRole)) {
@@ -86,7 +89,10 @@ export async function selectScopedEvents(userRole: Role, userId: number): Promis
 }
 
 /** Eligible roster size for an event (latest enrollment per student). */
-export async function countEligibleStudents(eventId: number): Promise<number> {
+export async function countEligibleStudents(
+  eventId: number,
+  scopeDepartmentId: AttendanceRosterDepartmentScope = null,
+): Promise<number> {
   const [evRows]: any = await pool.execute(
     `SELECT is_all_departments FROM events WHERE id = ? LIMIT 1`,
     [eventId],
@@ -99,6 +105,36 @@ export async function countEligibleStudents(eventId: number): Promise<number> {
       `SELECT year_level FROM event_audiences WHERE event_id = ? AND year_level IS NOT NULL LIMIT 1`,
       [eventId],
     );
+    const scopedDept = scopeDepartmentId != null ? Number(scopeDepartmentId) : null;
+
+    if (scopedDept != null) {
+      if (!audRows.length) {
+        const [rows]: any = await pool.execute(
+          `SELECT COUNT(DISTINCT s.id) AS c
+           FROM students s
+           INNER JOIN enrollments en ON en.id = (
+             SELECT e2.id FROM enrollments e2 WHERE e2.student_id = s.id ORDER BY e2.id DESC LIMIT 1
+           )
+           INNER JOIN programs p ON p.id = en.program_id
+           WHERE p.department_id = ?`,
+          [scopedDept],
+        );
+        return Number(rows[0]?.c ?? 0);
+      }
+      const yl = audRows[0].year_level;
+      const [rows]: any = await pool.execute(
+        `SELECT COUNT(DISTINCT s.id) AS c
+         FROM students s
+         INNER JOIN enrollments en ON en.id = (
+           SELECT e2.id FROM enrollments e2 WHERE e2.student_id = s.id ORDER BY e2.id DESC LIMIT 1
+         )
+         INNER JOIN programs p ON p.id = en.program_id
+         WHERE en.year_level = ? AND p.department_id = ?`,
+        [yl, scopedDept],
+      );
+      return Number(rows[0]?.c ?? 0);
+    }
+
     if (!audRows.length) {
       const [rows]: any = await pool.execute(
         `SELECT COUNT(DISTINCT s.id) AS c
@@ -113,6 +149,27 @@ export async function countEligibleStudents(eventId: number): Promise<number> {
        FROM students s
        INNER JOIN enrollments en ON en.student_id = s.id AND en.year_level = ?`,
       [yl],
+    );
+    return Number(rows[0]?.c ?? 0);
+  }
+
+  if (scopeDepartmentId != null) {
+    const dept = Number(scopeDepartmentId);
+    const [rows]: any = await pool.execute(
+      `SELECT COUNT(DISTINCT s.id) AS c
+       FROM students s
+       INNER JOIN enrollments en ON en.id = (
+         SELECT e2.id FROM enrollments e2 WHERE e2.student_id = s.id ORDER BY e2.id DESC LIMIT 1
+       )
+       INNER JOIN programs p ON p.id = en.program_id
+       WHERE EXISTS (
+         SELECT 1 FROM event_audiences ea
+         WHERE ea.event_id = ?
+           AND (ea.program_id IS NULL OR ea.program_id = en.program_id)
+           AND (ea.year_level IS NULL OR ea.year_level = en.year_level)
+       )
+       AND p.department_id = ?`,
+      [eventId, dept],
     );
     return Number(rows[0]?.c ?? 0);
   }
@@ -148,11 +205,30 @@ function attendedConditionSql(duration: string): string {
   }
 }
 
-export async function countAttendedStudents(eventId: number, duration: string): Promise<number> {
+export async function countAttendedStudents(
+  eventId: number,
+  duration: string,
+  scopeDepartmentId: AttendanceRosterDepartmentScope = null,
+): Promise<number> {
   const cond = attendedConditionSql(duration);
+  if (scopeDepartmentId == null) {
+    const [rows]: any = await pool.execute(
+      `SELECT COUNT(*) AS c FROM attendance a WHERE a.event_id = ? AND (${cond})`,
+      [eventId],
+    );
+    return Number(rows[0]?.c ?? 0);
+  }
+  const dept = Number(scopeDepartmentId);
   const [rows]: any = await pool.execute(
-    `SELECT COUNT(*) AS c FROM attendance a WHERE a.event_id = ? AND (${cond})`,
-    [eventId],
+    `SELECT COUNT(*) AS c
+     FROM attendance a
+     INNER JOIN students s ON s.id = a.student_id
+     INNER JOIN enrollments en ON en.id = (
+       SELECT e2.id FROM enrollments e2 WHERE e2.student_id = s.id ORDER BY e2.id DESC LIMIT 1
+     )
+     INNER JOIN programs p ON p.id = en.program_id
+     WHERE a.event_id = ? AND (${cond}) AND p.department_id = ?`,
+    [eventId, dept],
   );
   return Number(rows[0]?.c ?? 0);
 }
@@ -170,13 +246,20 @@ export interface EventStudentRow extends RowDataPacket {
   fine_total: string | number | null;
 }
 
-export async function selectStudentsForEventDetail(eventId: number): Promise<EventStudentRow[]> {
+export async function selectStudentsForEventDetail(
+  eventId: number,
+  scopeDepartmentId: AttendanceRosterDepartmentScope = null,
+): Promise<EventStudentRow[]> {
   const [evRows]: any = await pool.execute(
     `SELECT is_all_departments FROM events WHERE id = ? LIMIT 1`,
     [eventId],
   );
   if (!evRows.length) return [];
   const isAll = Number(evRows[0].is_all_departments) === 1;
+  const deptFilterSql =
+    scopeDepartmentId != null ? " AND p.department_id = ? " : "";
+  const deptParams: number[] =
+    scopeDepartmentId != null ? [Number(scopeDepartmentId)] : [];
 
   if (isAll) {
     const [audRows]: any = await pool.execute(
@@ -203,15 +286,15 @@ export async function selectStudentsForEventDetail(eventId: number): Promise<Eve
        `;
     if (!audRows.length) {
       const [rows] = await pool.execute<EventStudentRow[]>(
-        `${baseSql} ORDER BY full_name ASC`,
-        [eventId, eventId],
+        `${baseSql} WHERE 1=1 ${deptFilterSql} ORDER BY full_name ASC`,
+        [eventId, eventId, ...deptParams],
       );
       return rows;
     }
     const yl = Number(audRows[0].year_level);
     const [rows] = await pool.execute<EventStudentRow[]>(
-      `${baseSql} WHERE en.year_level = ? ORDER BY full_name ASC`,
-      [eventId, eventId, yl],
+      `${baseSql} WHERE en.year_level = ? ${deptFilterSql} ORDER BY full_name ASC`,
+      [eventId, eventId, yl, ...deptParams],
     );
     return rows;
   }
@@ -240,8 +323,9 @@ export async function selectStudentsForEventDetail(eventId: number): Promise<Eve
          AND (ea.program_id IS NULL OR ea.program_id = en.program_id)
          AND (ea.year_level IS NULL OR ea.year_level = en.year_level)
      )
+     ${deptFilterSql}
      ORDER BY full_name ASC`,
-    [eventId, eventId, eventId],
+    [eventId, eventId, eventId, ...deptParams],
   );
   return rows;
 }
