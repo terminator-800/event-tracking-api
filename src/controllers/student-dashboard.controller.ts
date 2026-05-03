@@ -16,6 +16,7 @@ export interface DashboardStudentListItem {
   id: string;
   name: string;
   course: string;
+  yearLevel: number | null;
   attendanceRate: number;
   totalEvents: number;
   eventsAttended: number;
@@ -134,29 +135,42 @@ export class StudentDashboardController {
   async list(req: Request, res: Response): Promise<void> {
     try {
       const role = req.user?.role as Role | undefined;
+      const userId = req.user?.id;
       const departmentId = req.user?.department_id ?? null;
       if (!role) {
         res.status(401).json({ message: "Unauthorized" });
         return;
       }
 
-      const adminRoles: Role[] = ["admin", "csg_president"];
-      if (!adminRoles.includes(role) && (departmentId == null || departmentId === undefined)) {
+      // Admins see institution-wide stats; governors and CSG president only stats for events they created.
+      const isAdminFullAccess = role === "admin";
+
+      const adminStyleDepartmentBypass: Role[] = ["admin", "csg_president"];
+      if (!adminStyleDepartmentBypass.includes(role) && (departmentId == null || departmentId === undefined)) {
         res.status(200).json({ students: [] });
         return;
       }
-      const departmentFilter = adminRoles.includes(role) ? null : departmentId!;
+      const departmentFilter = adminStyleDepartmentBypass.includes(role) ? null : departmentId!;
 
-      const rows = await findStudentsWithAttendanceStats(departmentFilter);
+      if (!isAdminFullAccess && userId == null) {
+        res.status(401).json({ message: "Unauthorized" });
+        return;
+      }
+
+      const createdByFilter = isAdminFullAccess ? null : userId!;
+      const rows = await findStudentsWithAttendanceStats(departmentFilter, createdByFilter);
       const students = rows.map((r) => {
         const total = Number(r.total_events) || 0;
         const att = Number(r.events_attended) || 0;
         const missed = Math.max(0, total - att);
         const rate = total > 0 ? Math.round((att / total) * 100) : 0;
+        const ylParsed = Number(r.year_level);
+        const yearLevel = Number.isFinite(ylParsed) ? ylParsed : null;
         return {
           id: r.student_id,
           name: r.full_name,
           course: programToCourseFilterValue(r.course_code, r.major),
+          yearLevel,
           attendanceRate: rate,
           totalEvents: total,
           eventsAttended: att,
@@ -174,11 +188,21 @@ export class StudentDashboardController {
   async detail(req: Request, res: Response): Promise<void> {
     try {
       const role = req.user?.role as Role | undefined;
+      const userId = req.user?.id;
       const departmentId = req.user?.department_id ?? null;
+      const isAdminFullAccess = role === "admin";
+
       if (!role) {
         res.status(401).json({ message: "Unauthorized" });
         return;
       }
+
+      if (!isAdminFullAccess && userId == null) {
+        res.status(401).json({ message: "Unauthorized" });
+        return;
+      }
+
+      const createdByFilter = isAdminFullAccess ? null : userId!;
 
       const studentId = String(req.params.studentId ?? "").trim();
       if (!studentId) {
@@ -198,8 +222,8 @@ export class StudentDashboardController {
         return;
       }
 
-      const adminRoles: Role[] = ["admin", "csg_president"];
-      if (!adminRoles.includes(role)) {
+      const adminStyleDepartmentBypass: Role[] = ["admin", "csg_president"];
+      if (!adminStyleDepartmentBypass.includes(role)) {
         const [progRows] = await pool.execute<RowDataPacket[]>(
           `SELECT department_id FROM programs WHERE id = ? LIMIT 1`,
           [ctx.program_id],
@@ -211,7 +235,12 @@ export class StudentDashboardController {
         }
       }
 
-      const rawHistory = await findCompletedEventsForStudent(pk, ctx.program_id, ctx.year_level);
+      const rawHistory = await findCompletedEventsForStudent(
+        pk,
+        ctx.program_id,
+        ctx.year_level,
+        createdByFilter,
+      );
       const eventHistory = rawHistory.map((row) => this.mapHistoryRow(row));
 
       const total = eventHistory.length;
@@ -232,10 +261,14 @@ export class StudentDashboardController {
       const displayName =
         nameRows[0] != null ? String((nameRows[0] as { fn: string }).fn) : studentId;
 
+      const ylDetail = Number(ctx.year_level);
+      const yearLevelDetail = Number.isFinite(ylDetail) ? ylDetail : null;
+
       const detail: DashboardStudentDetail = {
         id: studentId,
         name: displayName,
         course: programToCourseFilterValue(ctx.course_code, ctx.major),
+        yearLevel: yearLevelDetail,
         attendanceRate: rate,
         totalEvents: total,
         eventsAttended: attended,

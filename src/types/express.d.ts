@@ -16,6 +16,8 @@ declare global {
         username: string;
         role: Role;
         department_id?: number | null;
+        department_name?: string | null;
+        department_code?: string | null;
       };
     }
   }

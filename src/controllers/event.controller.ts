@@ -3,6 +3,20 @@ import { pool } from "../config/db";
 import { ResultSetHeader } from "mysql2";
 import { Role } from "../types/express";
 
+/** Frontend sends this when CEAS governor picks "All Majors" — audience = every program in that department. */
+const CEAS_GOVERNOR_ALL_PROGRAMS_SENTINEL = "__CEAS_GOVERNOR_ALL_PROGRAMS__";
+
+/** Frontend sends this when CBA governor picks "All Majors" — audience = whole BSBA cohort (department scope). */
+const CBA_GOVERNOR_ALL_BSBA_SENTINEL = "__CBA_GOVERNOR_ALL_BSBA__";
+
+const GOVERNOR_ROLES: Role[] = [
+  "it_governor",
+  "cba_governor",
+  "ceas_governor",
+  "coc_governor",
+  "chm_governor",
+];
+
 interface CreateEventBody {
   name: string;
   date: string;
@@ -24,6 +38,12 @@ interface CreateEventBody {
   yearLevel?: string;
   major?: string;
   fineAmount: number;
+}
+
+interface EventAudienceInsertRow {
+  departmentId: number;
+  programId: number | null;
+  yearLevel: number | null;
 }
 
 interface UpdateEventBody {
@@ -144,43 +164,111 @@ async createEvent(req: Request, res: Response): Promise<void> {
 
   const { amIn, amOut, pmIn, pmOut, graceAmIn, graceAmOut, gracePmIn, gracePmOut } = this.resolveTimings(req.body);
 
-  let resolvedProgramId: number | null = null;
+  let audiencesToInsert: EventAudienceInsertRow[] = [];
   let resolvedDepartmentId: number | null = null;
 
   if (!isAllDepartments) {
-    const parsedMajor = this.parseMajor(major);
+    const courseKey = String(course_code ?? "").trim().toUpperCase();
+    const parsedYearLevel = this.parseYearLevel(yearLevel);
 
-    // always get department_id from course_code
-    const [deptRows]: any = await pool.execute(
-      `SELECT id, department_id FROM programs WHERE course_code = ? LIMIT 1`,
-      [course_code]
-    );
-
-    if (!deptRows.length) {
-      res.status(400).json({ message: "Program not found." });
-      return;
-    }
-
-    resolvedDepartmentId = deptRows[0].department_id;
-
-    if (parsedMajor !== null) {
-      // specific major selected
-      const [programRows]: any = await pool.execute(
-        `SELECT id FROM programs WHERE course_code = ? AND major = ? LIMIT 1`,
-        [course_code, parsedMajor]
+    if (
+      courseKey === CEAS_GOVERNOR_ALL_PROGRAMS_SENTINEL &&
+      userRole === "ceas_governor" &&
+      userDepartmentId != null &&
+      Number.isFinite(Number(userDepartmentId))
+    ) {
+      resolvedDepartmentId = Number(userDepartmentId);
+      audiencesToInsert = [{ departmentId: resolvedDepartmentId, programId: null, yearLevel: parsedYearLevel }];
+    } else if (
+      courseKey === CBA_GOVERNOR_ALL_BSBA_SENTINEL &&
+      userRole === "cba_governor" &&
+      userDepartmentId != null &&
+      Number.isFinite(Number(userDepartmentId))
+    ) {
+      resolvedDepartmentId = Number(userDepartmentId);
+      audiencesToInsert = [{ departmentId: resolvedDepartmentId, programId: null, yearLevel: parsedYearLevel }];
+    } else {
+      const parsedMajor = this.parseMajor(major);
+      const [deptRows]: any = await pool.execute(
+        `SELECT id, department_id FROM programs WHERE course_code = ? LIMIT 1`,
+        [courseKey],
       );
-      if (!programRows.length) {
+
+      if (!deptRows.length) {
         res.status(400).json({ message: "Program not found." });
         return;
       }
-      resolvedProgramId = programRows[0].id;
-    } else {
-      // all majors — check if single program (no majors dept)
-      const [allPrograms]: any = await pool.execute(
-        `SELECT id FROM programs WHERE course_code = ?`,
-        [course_code]
-      );
-      resolvedProgramId = allPrograms.length === 1 ? allPrograms[0].id : null;
+
+      const deptId = Number(deptRows[0].department_id);
+      resolvedDepartmentId = deptId;
+
+      if (parsedMajor !== null) {
+        const majorsOrdered: string[] = [parsedMajor];
+        const ml = String(parsedMajor).trim().toLowerCase();
+        if (courseKey === "BSBA" && ml.includes("human resource")) {
+          majorsOrdered.push(
+            "Human Resource Development Management",
+            "Human Resource Management",
+            "HRDM",
+          );
+        }
+        if (courseKey === "BSBA" && ml === "financial management") {
+          majorsOrdered.push("FM");
+        }
+        if (courseKey === "BSBA" && ml === "marketing management") {
+          majorsOrdered.push("MM");
+        }
+        let programIdResolved: number | null = null;
+        const tried = new Set<string>();
+        for (const cand of majorsOrdered) {
+          const key = cand.trim().toLowerCase();
+          if (tried.has(key)) continue;
+          tried.add(key);
+          const [programRows]: any = await pool.execute(
+            `SELECT id FROM programs
+             WHERE department_id = ?
+               AND UPPER(TRIM(course_code)) = UPPER(TRIM(?))
+               AND LOWER(TRIM(COALESCE(major, ''))) = LOWER(TRIM(?))
+             LIMIT 1`,
+            [deptId, courseKey, cand],
+          );
+          if (programRows.length) {
+            programIdResolved = Number(programRows[0].id);
+            break;
+          }
+        }
+        if (programIdResolved == null) {
+          res.status(400).json({ message: "Program not found." });
+          return;
+        }
+        audiencesToInsert = [
+          {
+            departmentId: deptId,
+            programId: programIdResolved,
+            yearLevel: parsedYearLevel,
+          },
+        ];
+      } else if (courseKey === "BSED") {
+        const [bsedPrograms]: any = await pool.execute(
+          `SELECT id FROM programs WHERE department_id = ? AND UPPER(TRIM(course_code)) = 'BSED' ORDER BY id ASC`,
+          [deptId],
+        );
+        if (!bsedPrograms.length) {
+          res.status(400).json({ message: "Program not found." });
+          return;
+        }
+        audiencesToInsert = bsedPrograms.map((r: { id: number }) => ({
+          departmentId: deptId,
+          programId: Number(r.id),
+          yearLevel: parsedYearLevel,
+        }));
+      } else {
+        const [allPrograms]: any = await pool.execute(`SELECT id FROM programs WHERE course_code = ?`, [courseKey]);
+        const singleId = allPrograms.length === 1 ? allPrograms[0].id : null;
+        audiencesToInsert = [
+          { departmentId: deptId, programId: singleId, yearLevel: parsedYearLevel },
+        ];
+      }
     }
 
     if (userRole !== "admin" && userRole !== "csg_president") {
@@ -220,17 +308,19 @@ async createEvent(req: Request, res: Response): Promise<void> {
     const eventId = eventResult.insertId;
 
     if (!isAllDepartments) {
-      if (!resolvedDepartmentId) {
+      if (!resolvedDepartmentId || audiencesToInsert.length === 0) {
         await connection.rollback();
         res.status(400).json({ message: "Invalid resolved department/program." });
         return;
       }
 
-      await connection.execute(
-        `INSERT INTO event_audiences (event_id, department_id, program_id, year_level)
+      for (const row of audiencesToInsert) {
+        await connection.execute(
+          `INSERT INTO event_audiences (event_id, department_id, program_id, year_level)
           VALUES (?, ?, ?, ?)`,
-        [eventId, resolvedDepartmentId, resolvedProgramId, this.parseYearLevel(yearLevel)]
-      );
+          [eventId, row.departmentId, row.programId, row.yearLevel],
+        );
+      }
     } else {
       const parsedYearLevel = this.parseYearLevel(yearLevel);
       if (parsedYearLevel !== null) {
@@ -454,13 +544,11 @@ if (!userId) {
   return;
 }
 
-  // Only `admin` gets cross-department access. Governors must stay department-scoped.
-  const adminRoles: Role[] = ["admin", "csg_president"];
-
+  // Only `admin` sees every event cross-department. CSG presidents and governors only see events they created.
 try {
   let events: any[] = [];
 
-  if (adminRoles.includes(userRole)) {
+  if (userRole === "admin") {
     const [rows]: any = await pool.execute(
       `SELECT
         e.*,
@@ -469,9 +557,11 @@ try {
           JSON_OBJECT(
             'department_id',   ea.department_id,
             'department_name', d.name,
+            'department_code', d.code,
             'program_id',      ea.program_id,
             'course_code',     p.course_code,
             'course_name',     p.course_name,
+            'major',           NULLIF(TRIM(p.major), ''),
             'year_level',      ea.year_level
           )
         ) AS audiences
@@ -482,6 +572,35 @@ try {
       LEFT JOIN programs p         ON p.id = ea.program_id
       GROUP BY e.id
       ORDER BY e.date DESC`
+    );
+    events = rows;
+
+  } else if (userRole === "csg_president") {
+    const [rows]: any = await pool.execute(
+      `SELECT
+        e.*,
+        u.username AS created_by_username,
+        JSON_ARRAYAGG(
+          JSON_OBJECT(
+            'department_id',   ea.department_id,
+            'department_name', d.name,
+            'department_code', d.code,
+            'program_id',      ea.program_id,
+            'course_code',     p.course_code,
+            'course_name',     p.course_name,
+            'major',           NULLIF(TRIM(p.major), ''),
+            'year_level',      ea.year_level
+          )
+        ) AS audiences
+      FROM events e
+      LEFT JOIN users u            ON u.id  = e.created_by
+      LEFT JOIN event_audiences ea ON ea.event_id = e.id
+      LEFT JOIN departments d      ON d.id = ea.department_id
+      LEFT JOIN programs p         ON p.id = ea.program_id
+      WHERE e.created_by = ?
+      GROUP BY e.id
+      ORDER BY e.date DESC`,
+      [userId]
     );
     events = rows;
 
@@ -506,9 +625,11 @@ try {
           JSON_OBJECT(
             'department_id',   ea.department_id,
             'department_name', d.name,
+            'department_code', d.code,
             'program_id',      ea.program_id,
             'course_code',     p.course_code,
             'course_name',     p.course_name,
+            'major',           NULLIF(TRIM(p.major), ''),
             'year_level',      ea.year_level
           )
         ) AS audiences
@@ -518,11 +639,11 @@ try {
         AND (e.is_all_departments = 1 OR ea.department_id = ?)
       LEFT JOIN departments d      ON d.id = ea.department_id
       LEFT JOIN programs p         ON p.id = ea.program_id
-      WHERE e.is_all_departments = 1
-        OR ea.department_id = ?
+      WHERE (e.is_all_departments = 1 OR ea.department_id = ?)
+        AND e.created_by = ?
       GROUP BY e.id
       ORDER BY e.date DESC`,
-      [departmentId, departmentId]
+      [departmentId, departmentId, userId]
     );
     events = rows;
   }
@@ -539,15 +660,53 @@ try {
 
 async getCurrentEvent(req: Request, res: Response): Promise<void> {
   try {
+    const userId = req.user?.id;
     const departmentId = req.user?.department_id ?? null;
     const role = req.user?.role ?? null;
 
     console.log("[getCurrentEvent] user:", { role, departmentId });
+
+    if (role === "csg_president" && userId) {
+      const [rows]: any = await pool.execute(
+        `SELECT
+          e.*,
+          u.username AS created_by_username,
+          JSON_ARRAYAGG(
+            JSON_OBJECT(
+              'department_id',   ea.department_id,
+              'department_name', d.name,
+              'department_code', d.code,
+              'program_id',      ea.program_id,
+              'course_code',     p.course_code,
+              'course_name',     p.course_name,
+              'major',           NULLIF(TRIM(p.major), ''),
+              'year_level',      ea.year_level
+            )
+          ) AS audiences
+        FROM events e
+        LEFT JOIN users u            ON u.id  = e.created_by
+        LEFT JOIN event_audiences ea ON ea.event_id = e.id
+        LEFT JOIN departments d      ON d.id = ea.department_id
+        LEFT JOIN programs p         ON p.id = ea.program_id
+        WHERE e.created_by = ?
+        AND e.status IN ('Upcoming', 'Ongoing')
+        GROUP BY e.id
+        ORDER BY e.date ASC`,
+        [userId]
+      );
+      res.status(200).json({ events: rows });
+      return;
+    }
+
       // When logged in with a department token, only return:
       // - events marked as `is_all_departments`
       // - events that target the user's `department_id`
-      // And only include audiences matching the user's department (for non-all-dept events).
+      // Governors: only events they created. Admins stay department/global as before.
       if (departmentId) {
+        const filterByCreator =
+          role != null && GOVERNOR_ROLES.includes(role) && !!userId;
+        const creatorSql = filterByCreator ? " AND e.created_by = ?" : "";
+
         const [rows]: any = await pool.execute(
           `SELECT
             e.*,
@@ -556,9 +715,11 @@ async getCurrentEvent(req: Request, res: Response): Promise<void> {
               JSON_OBJECT(
                 'department_id',   ea.department_id,
                 'department_name', d.name,
+                'department_code', d.code,
                 'program_id',      ea.program_id,
                 'course_code',     p.course_code,
                 'course_name',     p.course_name,
+                'major',           NULLIF(TRIM(p.major), ''),
                 'year_level',      ea.year_level
               )
             ) AS audiences
@@ -569,39 +730,79 @@ async getCurrentEvent(req: Request, res: Response): Promise<void> {
           LEFT JOIN programs p         ON p.id = ea.program_id
           WHERE (e.is_all_departments = 1 OR ea.department_id = ?)
           AND e.status IN ('Upcoming', 'Ongoing')
+          ${creatorSql}
           GROUP BY e.id
           ORDER BY e.date ASC`,
-          [departmentId, departmentId]
+          filterByCreator
+            ? [departmentId, departmentId, userId]
+            : [departmentId, departmentId]
         );
 
         res.status(200).json({ events: rows });
         return;
       }
 
-      // Public (not logged in): only show global events.
+      // Public (not logged in): CSG / all-departments events unchanged, plus governor-created
+      // upcoming & ongoing events for the public homepage.
+      const govPlaceholders = GOVERNOR_ROLES.map(() => "?").join(", ");
       const [rows]: any = await pool.execute(
-        `SELECT
-          e.*,
-          u.username AS created_by_username,
-          JSON_ARRAYAGG(
-            JSON_OBJECT(
-              'department_id',   ea.department_id,
-              'department_name', d.name,
-              'program_id',      ea.program_id,
-              'course_code',     p.course_code,
-              'course_name',     p.course_name,
-              'year_level',      ea.year_level
-            )
-          ) AS audiences
-        FROM events e
-        LEFT JOIN users u            ON u.id  = e.created_by
-        LEFT JOIN event_audiences ea ON ea.event_id = e.id AND e.is_all_departments = 1
-        LEFT JOIN departments d      ON d.id = ea.department_id
-        LEFT JOIN programs p         ON p.id = ea.program_id
-        WHERE e.is_all_departments = 1
-        AND e.status IN ('Upcoming', 'Ongoing')
-        GROUP BY e.id
-        ORDER BY e.date ASC`
+        `SELECT * FROM (
+          (
+            SELECT
+              e.*,
+              u.username AS created_by_username,
+              JSON_ARRAYAGG(
+                JSON_OBJECT(
+                  'department_id',   ea.department_id,
+                  'department_name', d.name,
+                  'department_code', d.code,
+                  'program_id',      ea.program_id,
+                  'course_code',     p.course_code,
+                  'course_name',     p.course_name,
+                  'major',           NULLIF(TRIM(p.major), ''),
+                  'year_level',      ea.year_level
+                )
+              ) AS audiences
+            FROM events e
+            LEFT JOIN users u            ON u.id  = e.created_by
+            LEFT JOIN event_audiences ea ON ea.event_id = e.id AND e.is_all_departments = 1
+            LEFT JOIN departments d      ON d.id = ea.department_id
+            LEFT JOIN programs p         ON p.id = ea.program_id
+            WHERE e.is_all_departments = 1
+              AND e.status IN ('Upcoming', 'Ongoing')
+            GROUP BY e.id
+          )
+          UNION ALL
+          (
+            SELECT
+              e.*,
+              u.username AS created_by_username,
+              JSON_ARRAYAGG(
+                JSON_OBJECT(
+                  'department_id',   ea.department_id,
+                  'department_name', d.name,
+                  'department_code', d.code,
+                  'program_id',      ea.program_id,
+                  'course_code',     p.course_code,
+                  'course_name',     p.course_name,
+                  'major',           NULLIF(TRIM(p.major), ''),
+                  'year_level',      ea.year_level
+                )
+              ) AS audiences
+            FROM events e
+            INNER JOIN users creator ON creator.id = e.created_by
+            LEFT JOIN users u            ON u.id = e.created_by
+            LEFT JOIN event_audiences ea ON ea.event_id = e.id
+            LEFT JOIN departments d      ON d.id = ea.department_id
+            LEFT JOIN programs p         ON p.id = ea.program_id
+            WHERE creator.role IN (${govPlaceholders})
+              AND e.is_all_departments = 0
+              AND e.status IN ('Upcoming', 'Ongoing')
+            GROUP BY e.id
+          )
+        ) AS public_events
+        ORDER BY date ASC`,
+        [...GOVERNOR_ROLES]
       );
       console.log("get current events:", rows.length);
       

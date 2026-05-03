@@ -75,9 +75,17 @@ async function generateEndOfEventFines(currentDate: string): Promise<void> {
         eligibleParams.push(audience.year_level);
       }
     } else {
+      // Matches event_audiences like CEAS/CBA "All Majors": department_id set, program_id NULL
+      // (JOIN ea.program_id = e.program_id never matches NULL). Align with attendance-page.repository.
       eligibleStudentsSql += `
-        JOIN event_audiences ea ON ea.program_id = e.program_id
-        WHERE ea.event_id = ?`;
+        INNER JOIN programs p ON p.id = e.program_id
+        WHERE EXISTS (
+          SELECT 1 FROM event_audiences ea
+          WHERE ea.event_id = ?
+            AND (ea.department_id IS NULL OR ea.department_id = p.department_id)
+            AND (ea.program_id IS NULL OR ea.program_id = e.program_id)
+            AND (ea.year_level IS NULL OR ea.year_level = e.year_level)
+        )`;
       eligibleParams.push(event.id);
     }
 

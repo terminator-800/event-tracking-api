@@ -85,10 +85,13 @@ async departmentSignIn(req: Request, res: Response): Promise<void> {
       }
     }
 
-    const token = generateDepartmentToken({ 
-      department_id: department.id,
-      department_name: department.name,
-      department_code: department.code,
+    const token = generateDepartmentToken({
+      id: user.id,
+      username: user.username,
+      role: user.role,
+      department_id: Number(department.id),
+      department_name: String(department.name),
+      department_code: String(department.code),
     });
 
     setAuthCookie(res, token);

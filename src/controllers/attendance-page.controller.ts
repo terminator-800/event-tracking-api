@@ -7,20 +7,24 @@ import {
   AttendanceRosterDepartmentScope,
   countAttendedStudents,
   countEligibleStudents,
+  getUserDepartmentIdForAttendance,
   selectScopedEvents,
   selectStudentsForEventDetail,
   ScopedEventRow,
   userCanAccessEvent,
 } from "../repositories/attendance-page.repository";
 
-/** Governors (any non–institution-wide role with a department) see only that department’s students on rosters. */
-function rosterDepartmentScopeFromRequest(
+/** Roster scope: JWT department when present (dept homepage login), otherwise DB user row — matches scoped event queries. */
+async function resolveAttendanceDepartmentScope(
   role: Role,
-  departmentId: number | null | undefined,
-): AttendanceRosterDepartmentScope {
+  userId: number,
+  jwtDepartmentId: number | null | undefined,
+): Promise<AttendanceRosterDepartmentScope> {
   if (ADMIN_ROLES.includes(role)) return null;
-  if (departmentId == null || !Number.isFinite(Number(departmentId))) return null;
-  return Number(departmentId);
+  if (jwtDepartmentId != null && Number.isFinite(Number(jwtDepartmentId))) {
+    return Number(jwtDepartmentId);
+  }
+  return getUserDepartmentIdForAttendance(userId);
 }
 
 function mapStatus(db: string): "upcoming" | "ongoing" | "completed" | "cancelled" {
@@ -73,6 +77,7 @@ async function buildSummaryPayload(
       venue: e.venue,
       duration: e.duration,
       audiences: e.audiences,
+      isAllDepartments: Number(e.is_all_departments) === 1,
     });
   }
   return { events: out, generatedAt: new Date().toISOString() };
@@ -102,7 +107,11 @@ export class AttendancePageController {
       return;
     }
     try {
-      const scopeDept = rosterDepartmentScopeFromRequest(userRole, req.user?.department_id);
+      const scopeDept = await resolveAttendanceDepartmentScope(
+        userRole,
+        userId,
+        req.user?.department_id,
+      );
       const rows = await selectScopedEvents(userRole, userId);
       const payload = await buildSummaryPayload(rows, scopeDept);
       res.status(200).json(payload);
@@ -125,16 +134,18 @@ export class AttendancePageController {
       return;
     }
     try {
-      const scopeDept = rosterDepartmentScopeFromRequest(userRole, req.user?.department_id);
+      const scopeDept = await resolveAttendanceDepartmentScope(
+        userRole,
+        userId,
+        req.user?.department_id,
+      );
       const rows = await selectScopedEvents(userRole, userId);
       const eventRow = rows.find((r) => r.id === eventId);
       if (!eventRow) {
         res.status(404).json({ message: "Event not found." });
         return;
       }
-      if (
-        !userCanAccessEvent(eventRow, userRole, req.user?.department_id ?? null)
-      ) {
+      if (!userCanAccessEvent(eventRow, userRole, scopeDept ?? null)) {
         res.status(403).json({ message: "Forbidden." });
         return;
       }
@@ -152,12 +163,16 @@ export class AttendancePageController {
         const amOut = sqlTimeTo12Hour(s.am_time_out);
         const pmIn = sqlTimeTo12Hour(s.pm_time_in);
         const pmOut = sqlTimeTo12Hour(s.pm_time_out);
+        const ylRaw = s.year_level;
+        const yearLevelParsed =
+          ylRaw != null && ylRaw !== "" && Number.isFinite(Number(ylRaw)) ? Number(ylRaw) : null;
         return {
           id: String(s.student_id),
           name: s.full_name,
           course: s.course_code,
           major:
             s.major != null && String(s.major).trim() !== "" ? String(s.major).trim() : null,
+          yearLevel: yearLevelParsed,
           status: ok ? "attended" : "absent",
           finePhp: fine,
           fromServer: true,
@@ -183,6 +198,7 @@ export class AttendancePageController {
           venue: eventRow.venue,
           duration: eventRow.duration,
           audiences: eventRow.audiences,
+          isAllDepartments: Number(eventRow.is_all_departments) === 1,
           students,
         },
       });
@@ -209,7 +225,11 @@ export class AttendancePageController {
 
     const send = async () => {
       try {
-        const scopeDept = rosterDepartmentScopeFromRequest(userRole, req.user?.department_id);
+        const scopeDept = await resolveAttendanceDepartmentScope(
+          userRole,
+          userId,
+          req.user?.department_id,
+        );
         const rows = await selectScopedEvents(userRole, userId);
         const payload = await buildSummaryPayload(rows, scopeDept);
         res.write(`data: ${JSON.stringify(payload)}\n\n`);

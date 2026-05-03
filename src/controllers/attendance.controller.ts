@@ -62,8 +62,26 @@ private async findOngoingEvent(currentDate: string) {
       FROM events
       WHERE status = 'Ongoing'
         AND date = ?
+      ORDER BY id ASC
       LIMIT 1`,
     [currentDate]
+  );
+  return (rows as any[])[0] ?? null;
+}
+
+/** When the client sends eventId (multiple ongoing events same day), resolve that row only. */
+private async findOngoingEventById(eventId: number, currentDate: string) {
+  const [rows] = await pool.execute(
+    `SELECT id, duration, fine_amount,
+            am_time_in, am_grace_in, am_time_out,
+            pm_time_in, pm_grace_in, pm_time_out,
+            is_all_departments
+      FROM events
+      WHERE id = ?
+        AND status = 'Ongoing'
+        AND date = ?
+      LIMIT 1`,
+    [eventId, currentDate]
   );
   return (rows as any[])[0] ?? null;
 }
@@ -179,28 +197,38 @@ private async isStudentInEventAudience(studentId: number, eventId: number, isAll
     return (rows as any[]).length > 0;
   }
 
-  // ✅ department-specific: check program + year level
+  // Department audiences — includes CEAS/CBA "All Majors" (department_id set, program_id NULL).
+  // Plain JOIN ea.program_id = en.program_id never matches NULL.
   const [rows] = await pool.execute(
-    `SELECT ea.id
-     FROM event_audiences ea
-     JOIN enrollments e ON e.program_id = ea.program_id
-     WHERE ea.event_id = ?
-       AND e.student_id = ?
-       AND (ea.year_level IS NULL OR ea.year_level = e.year_level)
+    `SELECT 1 AS ok
+     FROM enrollments en
+     INNER JOIN programs p ON p.id = en.program_id
+     WHERE en.student_id = ?
+       AND en.id = (
+         SELECT e2.id FROM enrollments e2 WHERE e2.student_id = ? ORDER BY e2.id DESC LIMIT 1
+       )
+       AND EXISTS (
+         SELECT 1 FROM event_audiences ea
+         WHERE ea.event_id = ?
+           AND (ea.department_id IS NULL OR ea.department_id = p.department_id)
+           AND (ea.program_id IS NULL OR ea.program_id = en.program_id)
+           AND (ea.year_level IS NULL OR ea.year_level = en.year_level)
+       )
      LIMIT 1`,
-    [eventId, studentId]
+    [studentId, studentId, eventId]
   );
   return (rows as any[]).length > 0;
 }
 
 public recordAttendance = async (req: Request, res: Response): Promise<void> => {
-  const { studentId, simulatedTapTime, simulatedDate, attendanceKind } = req.body;
+  const { studentId, simulatedTapTime, simulatedDate, attendanceKind, eventId: rawEventId } = req.body;
   const requestedKind = this.parseAttendanceKind(attendanceKind);
   console.log("[AttendanceController] Received attendance record request:", {
     studentId,
     simulatedTapTime,
     simulatedDate,
     attendanceKind: requestedKind,
+    eventId: rawEventId,
   });
 
   if (!studentId) {
@@ -220,10 +248,29 @@ public recordAttendance = async (req: Request, res: Response): Promise<void> => 
       return;
     }
 
-    const event = await this.findOngoingEvent(currentDate);
-    if (!event) {
-      res.status(404).json({ message: "No ongoing event found." });
-      return;
+    let event: any = null;
+    const parsedEventId =
+      rawEventId === undefined || rawEventId === null || rawEventId === ""
+        ? null
+        : Number(rawEventId);
+    if (parsedEventId != null) {
+      if (!Number.isFinite(parsedEventId)) {
+        res.status(400).json({ message: "Invalid eventId." });
+        return;
+      }
+      event = await this.findOngoingEventById(parsedEventId, currentDate);
+      if (!event) {
+        res.status(404).json({
+          message: "That event is not ongoing today, or no longer matches this date.",
+        });
+        return;
+      }
+    } else {
+      event = await this.findOngoingEvent(currentDate);
+      if (!event) {
+        res.status(404).json({ message: "No ongoing event found." });
+        return;
+      }
     }
 
     const isAllowed = await this.isStudentInEventAudience(student.id, event.id, event.is_all_departments);

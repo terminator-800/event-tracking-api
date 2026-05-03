@@ -4,13 +4,24 @@ import { Role } from "../../types/express";
 import { clampMoney, computeFineStatus } from "../../utils/paymentStatus";
 
 type SessionKind = "whole" | "am" | "pm";
-const ADMIN_ROLES: Role[] = ["admin", "csg_president"];
+
+function isPaymentAdminUnfiltered(role: Role): boolean {
+  return role === "admin";
+}
+
+/** Governors + CSG president only see fines / events they created (same as Manage Event / Attendance). */
+function paymentCreatorUserId(role: Role, userId: number | null | undefined): number | null {
+  if (isPaymentAdminUnfiltered(role)) return null;
+  const id = userId != null && Number.isFinite(Number(userId)) ? Number(userId) : null;
+  return id;
+}
 
 interface PaymentStudentRow extends RowDataPacket {
   student_pk: number;
   student_id: string;
   student_name: string;
   course_code: string | null;
+  major: string | null;
   year_level: number | null;
   total_events: string | number;
   total_fine: string | number;
@@ -55,10 +66,8 @@ function normalizeDurationToSessionKind(duration: string): SessionKind {
 
 function toYearLabel(value: number | null): string {
   if (value == null) return "—";
-  if (value === 1) return "1st Year";
-  if (value === 2) return "2nd Year";
-  if (value === 3) return "3rd Year";
-  return `${value}th Year`;
+  const n = Number(value);
+  return Number.isFinite(n) ? String(n) : "—";
 }
 
 export class PaymentService {
@@ -66,9 +75,45 @@ export class PaymentService {
     publicStudentId: string,
     role: Role,
     departmentId: number | null,
+    userId: number | null,
     conn?: PoolConnection,
   ): Promise<number | null> {
     const executor = conn ?? pool;
+    const creatorId = paymentCreatorUserId(role, userId);
+
+    if (isPaymentAdminUnfiltered(role)) {
+      const [rows] = await executor.execute<RowDataPacket[]>(
+        `
+        SELECT s.id AS student_pk
+        FROM students s
+        WHERE s.student_id = ?
+        LIMIT 1
+        `,
+        [publicStudentId],
+      );
+      return rows[0] ? Number((rows[0] as { student_pk: number }).student_pk) : null;
+    }
+
+    if (creatorId == null) return null;
+
+    if (role === "csg_president") {
+      const [rows] = await executor.execute<RowDataPacket[]>(
+        `
+        SELECT s.id AS student_pk
+        FROM students s
+        WHERE s.student_id = ?
+          AND EXISTS (
+            SELECT 1 FROM fines f
+            INNER JOIN events e ON e.id = f.event_id AND e.status = 'Completed'
+            WHERE f.student_id = s.id AND e.created_by = ?
+          )
+        LIMIT 1
+        `,
+        [publicStudentId, creatorId],
+      );
+      return rows[0] ? Number((rows[0] as { student_pk: number }).student_pk) : null;
+    }
+
     const [rows] = await executor.execute<RowDataPacket[]>(
       `
       SELECT s.id AS student_pk, p.department_id AS department_id
@@ -78,30 +123,36 @@ export class PaymentService {
       )
       INNER JOIN programs p ON p.id = en.program_id
       WHERE s.student_id = ?
+        AND p.department_id = ?
+        AND EXISTS (
+          SELECT 1 FROM fines f
+          INNER JOIN events e ON e.id = f.event_id AND e.status = 'Completed'
+          WHERE f.student_id = s.id AND e.created_by = ?
+        )
       LIMIT 1
       `,
-      [publicStudentId],
+      [publicStudentId, Number(departmentId), creatorId],
     );
     if (!rows[0]) return null;
-    const studentPk = Number(rows[0].student_pk);
-    if (!ADMIN_ROLES.includes(role)) {
-      const dep = Number(rows[0].department_id);
-      if (!departmentId || dep !== Number(departmentId)) return null;
-    }
-    return studentPk;
+    const dep = Number((rows[0] as { department_id: number }).department_id);
+    if (!departmentId || dep !== Number(departmentId)) return null;
+    return Number((rows[0] as { student_pk: number }).student_pk);
   }
 
   private async assertFineAccess(
     fineId: number,
     role: Role,
     departmentId: number | null,
+    userId: number | null,
     conn?: PoolConnection,
   ): Promise<{ fineId: number; studentId: number } | null> {
     const executor = conn ?? pool;
     const [rows] = await executor.execute<RowDataPacket[]>(
       `
-      SELECT f.id AS fine_id, f.student_id AS student_id, p.department_id AS department_id
+      SELECT f.id AS fine_id, f.student_id AS student_id, p.department_id AS department_id,
+             ev.created_by AS event_created_by
       FROM fines f
+      INNER JOIN events ev ON ev.id = f.event_id
       INNER JOIN students s ON s.id = f.student_id
       INNER JOIN enrollments en ON en.id = (
         SELECT e2.id FROM enrollments e2 WHERE e2.student_id = s.id ORDER BY e2.id DESC LIMIT 1
@@ -113,15 +164,25 @@ export class PaymentService {
       [fineId],
     );
     if (!rows[0]) return null;
-    if (!ADMIN_ROLES.includes(role)) {
-      const dep = Number(rows[0].department_id);
-      if (!departmentId || dep !== Number(departmentId)) return null;
+    const creatorId = paymentCreatorUserId(role, userId);
+    if (creatorId != null) {
+      const evCreator = Number((rows[0] as { event_created_by: number }).event_created_by);
+      if (!Number.isFinite(evCreator) || evCreator !== creatorId) return null;
     }
+    if (role === "csg_president" || isPaymentAdminUnfiltered(role)) {
+      return { fineId: Number(rows[0].fine_id), studentId: Number(rows[0].student_id) };
+    }
+    const dep = Number(rows[0].department_id);
+    if (!departmentId || dep !== Number(departmentId)) return null;
     return { fineId: Number(rows[0].fine_id), studentId: Number(rows[0].student_id) };
   }
 
-  private async getStudentTotals(studentPk: number, conn?: PoolConnection) {
+  private async getStudentTotals(studentPk: number, creatorUserId: number | null, conn?: PoolConnection) {
     const executor = conn ?? pool;
+    const creatorSql =
+      creatorUserId != null ? " AND e.created_by = ? " : "";
+    const params =
+      creatorUserId != null ? [studentPk, creatorUserId] : [studentPk];
     const [rows] = await executor.execute<RowDataPacket[]>(
       `
       SELECT
@@ -132,8 +193,9 @@ export class PaymentService {
       INNER JOIN events e ON e.id = f.event_id
       WHERE f.student_id = ?
         AND e.status = 'Completed'
+        ${creatorSql}
       `,
-      [studentPk],
+      params,
     );
     const row = rows[0] ?? {};
     const totalFine = clampMoney(Number(row.total_fine) || 0);
@@ -143,10 +205,21 @@ export class PaymentService {
     return { totalFine, paidAmount, waivedAmount, remaining };
   }
 
-  async listPaymentStudents(role: Role, departmentId: number | null) {
+  async listPaymentStudents(role: Role, departmentId: number | null, userId: number | null) {
     const params: (number | string)[] = [];
-    const scopedClause = ADMIN_ROLES.includes(role) ? "" : "WHERE p.department_id = ?";
-    if (!ADMIN_ROLES.includes(role)) params.push(Number(departmentId));
+    const isAdmin = isPaymentAdminUnfiltered(role);
+    const creatorId = paymentCreatorUserId(role, userId);
+    const needsDeptScope = !isAdmin && role !== "csg_president";
+    const scopedClause = needsDeptScope ? "WHERE p.department_id = ?" : "";
+
+    const feCreatorSql = creatorId != null ? " AND fe.created_by = ? " : "";
+    const evCreatorSql = creatorId != null ? " AND ev.created_by = ? " : "";
+
+    if (creatorId != null) {
+      params.push(creatorId);
+      params.push(creatorId);
+    }
+    if (needsDeptScope) params.push(Number(departmentId));
 
     const [studentRows] = await pool.execute<PaymentStudentRow[]>(
       `
@@ -155,11 +228,13 @@ export class PaymentService {
         s.student_id AS student_id,
         CONCAT(s.last_name, ', ', s.first_name) AS student_name,
         p.course_code AS course_code,
+        p.major AS major,
         en.year_level AS year_level,
         (
           SELECT COUNT(DISTINCT ev.id)
           FROM events ev
           WHERE ev.status = 'Completed'
+            ${evCreatorSql}
             AND (
               (
                 ev.is_all_departments = 1
@@ -182,7 +257,8 @@ export class PaymentService {
                 SELECT 1
                 FROM event_audiences ea2
                 WHERE ea2.event_id = ev.id
-                  AND ea2.program_id = en.program_id
+                  AND (ea2.department_id IS NULL OR ea2.department_id = p.department_id)
+                  AND (ea2.program_id IS NULL OR ea2.program_id = en.program_id)
                   AND (ea2.year_level IS NULL OR ea2.year_level = en.year_level)
               )
             )
@@ -197,9 +273,10 @@ export class PaymentService {
       INNER JOIN programs p ON p.id = en.program_id
       LEFT JOIN fines f ON f.student_id = s.id
       LEFT JOIN events fe ON fe.id = f.event_id AND fe.status = 'Completed'
+        ${feCreatorSql}
       ${scopedClause}
-      GROUP BY s.id, s.student_id, s.last_name, s.first_name, p.course_code, en.program_id, en.year_level
-      HAVING total_fine > 0
+      GROUP BY s.id, s.student_id, s.last_name, s.first_name, p.course_code, p.major, en.program_id, en.year_level
+      HAVING total_fine > 0 OR total_events > 0
       ORDER BY student_name ASC
       `,
       params.length ? params : undefined,
@@ -209,6 +286,9 @@ export class PaymentService {
     const eventsByStudent = new Map<number, any[]>();
     if (studentPkList.length > 0) {
       const placeholders = studentPkList.map(() => "?").join(",");
+      const eventCreatorSql = creatorId != null ? " AND e.created_by = ? " : "";
+      const eventParams = [...studentPkList];
+      if (creatorId != null) eventParams.push(creatorId);
       const [eventRows] = await pool.execute<PaymentEventRow[]>(
         `
         SELECT
@@ -227,6 +307,7 @@ export class PaymentService {
         INNER JOIN events e ON e.id = f.event_id AND e.status = 'Completed'
         LEFT JOIN attendance a ON a.event_id = e.id AND a.student_id = f.student_id
         WHERE f.student_id IN (${placeholders})
+          ${eventCreatorSql}
         GROUP BY
           e.id,
           f.student_id,
@@ -239,7 +320,7 @@ export class PaymentService {
           a.pm_time_out
         ORDER BY e.date DESC, e.id DESC
         `,
-        studentPkList,
+        eventParams,
       );
       for (const row of eventRows) {
         const studentPk = Number(row.student_pk);
@@ -258,12 +339,105 @@ export class PaymentService {
         });
         eventsByStudent.set(studentPk, existing);
       }
+
+      const eCreatorWhere = creatorId != null ? " AND e.created_by = ? " : "";
+      const zeroFineParams: (number | string)[] = [...studentPkList];
+      if (needsDeptScope) zeroFineParams.push(Number(departmentId));
+      if (creatorId != null) zeroFineParams.push(creatorId);
+
+      const deptAndZero = needsDeptScope ? " AND p.department_id = ? " : "";
+
+      const [zeroFineRows] = await pool.execute<RowDataPacket[]>(
+        `
+        SELECT
+          s.id AS student_pk,
+          e.id AS event_id,
+          e.name AS event_name,
+          DATE_FORMAT(e.date, '%Y-%m-%d') AS event_date,
+          e.duration AS duration,
+          MAX(a.am_time_in) AS am_time_in,
+          MAX(a.am_time_out) AS am_time_out,
+          MAX(a.pm_time_in) AS pm_time_in,
+          MAX(a.pm_time_out) AS pm_time_out
+        FROM students s
+        INNER JOIN enrollments en ON en.id = (
+          SELECT e2.id FROM enrollments e2 WHERE e2.student_id = s.id ORDER BY e2.id DESC LIMIT 1
+        )
+        INNER JOIN programs p ON p.id = en.program_id
+        INNER JOIN events e ON e.status = 'Completed'
+        LEFT JOIN attendance a ON a.event_id = e.id AND a.student_id = s.id
+        WHERE s.id IN (${placeholders})
+          ${deptAndZero}
+          ${eCreatorWhere}
+          AND NOT EXISTS (
+            SELECT 1 FROM fines f
+            WHERE f.student_id = s.id AND f.event_id = e.id
+          )
+          AND (
+            (
+              e.is_all_departments = 1
+              AND (
+                NOT EXISTS (
+                  SELECT 1 FROM event_audiences ea0
+                  WHERE ea0.event_id = e.id AND ea0.year_level IS NOT NULL
+                )
+                OR EXISTS (
+                  SELECT 1 FROM event_audiences ea1
+                  WHERE ea1.event_id = e.id
+                    AND (ea1.year_level IS NULL OR ea1.year_level = en.year_level)
+                )
+              )
+            )
+            OR EXISTS (
+              SELECT 1 FROM event_audiences ea2
+              WHERE ea2.event_id = e.id
+                AND (ea2.department_id IS NULL OR ea2.department_id = p.department_id)
+                AND (ea2.program_id IS NULL OR ea2.program_id = en.program_id)
+                AND (ea2.year_level IS NULL OR ea2.year_level = en.year_level)
+            )
+          )
+        GROUP BY s.id, e.id, e.name, e.date, e.duration
+        ORDER BY e.date DESC, e.id DESC
+        `,
+        zeroFineParams,
+      );
+
+      for (const row of zeroFineRows) {
+        const studentPk = Number(row.student_pk);
+        const existing = eventsByStudent.get(studentPk) ?? [];
+        existing.push({
+          id: `E-${row.event_id}`,
+          fineId: null,
+          name: String(row.event_name ?? "Untitled Event"),
+          date: String(row.event_date ?? ""),
+          sessionKind: normalizeDurationToSessionKind(String(row.duration ?? "")),
+          amIn: row.am_time_in ?? null,
+          amOut: row.am_time_out ?? null,
+          pmIn: row.pm_time_in ?? null,
+          pmOut: row.pm_time_out ?? null,
+          fine: 0,
+        });
+        eventsByStudent.set(studentPk, existing);
+      }
+
+      for (const arr of eventsByStudent.values()) {
+        arr.sort((a, b) => {
+          const db = String(b.date ?? "");
+          const da = String(a.date ?? "");
+          if (db !== da) return db.localeCompare(da);
+          return String(b.id ?? "").localeCompare(String(a.id ?? ""));
+        });
+      }
     }
 
     const students = studentRows.map((row) => ({
       studentId: String(row.student_id),
       studentName: String(row.student_name),
       course: row.course_code ? String(row.course_code) : "—",
+      major:
+        row.major != null && String(row.major).trim() !== ""
+          ? String(row.major).trim()
+          : null,
       year: toYearLabel(row.year_level != null ? Number(row.year_level) : null),
       totalEvents: Math.max(0, Number(row.total_events) || 0),
       totalFine: clampMoney(Number(row.total_fine) || 0),
@@ -292,18 +466,29 @@ export class PaymentService {
     const conn = await pool.getConnection();
     try {
       await conn.beginTransaction();
-      const studentPk = await this.assertStudentAccess(args.publicStudentId, args.role, args.departmentId, conn);
+      const creatorForTotals = paymentCreatorUserId(args.role, args.encodedByUserId);
+      const studentPk = await this.assertStudentAccess(
+        args.publicStudentId,
+        args.role,
+        args.departmentId,
+        args.encodedByUserId,
+        conn,
+      );
       if (!studentPk) {
         await conn.rollback();
         return { ok: false as const, status: 404, message: "Student not found or access denied." };
       }
 
-      const totalsBefore = await this.getStudentTotals(studentPk, conn);
+      const totalsBefore = await this.getStudentTotals(studentPk, creatorForTotals, conn);
       if (amount > totalsBefore.remaining) {
         await conn.rollback();
         return { ok: false as const, status: 400, message: "Amount cannot be greater than remaining balance." };
       }
 
+      const openFineCreatorSql =
+        creatorForTotals != null ? " AND e.created_by = ? " : "";
+      const openFineParams =
+        creatorForTotals != null ? [studentPk, creatorForTotals] : [studentPk];
       const [openFines] = await conn.execute<OpenFineRow[]>(
         `
         SELECT f.id, f.amount, f.paid_amount, f.status
@@ -313,9 +498,10 @@ export class PaymentService {
           AND f.status IN ('Unpaid', 'Partial')
           AND f.amount > f.paid_amount
           AND e.status = 'Completed'
+          ${openFineCreatorSql}
         ORDER BY f.updated_at ASC, f.id ASC
         `,
-        [studentPk],
+        openFineParams,
       );
 
       let remainingToApply = amount;
@@ -365,7 +551,7 @@ export class PaymentService {
         return { ok: false as const, status: 400, message: "Unable to allocate payment across open fines." };
       }
 
-      const totalsAfter = await this.getStudentTotals(studentPk, conn);
+      const totalsAfter = await this.getStudentTotals(studentPk, creatorForTotals, conn);
       await conn.commit();
       return {
         ok: true as const,
@@ -385,11 +571,17 @@ export class PaymentService {
   async updateFineAmount(args: {
     role: Role;
     departmentId: number | null;
+    userId: number;
     fineId: number;
     amount: number;
   }) {
     const fineAmount = clampMoney(args.amount);
-    const access = await this.assertFineAccess(args.fineId, args.role, args.departmentId);
+    const access = await this.assertFineAccess(
+      args.fineId,
+      args.role,
+      args.departmentId,
+      args.userId,
+    );
     if (!access) {
       return { ok: false as const, status: 404, message: "Fine not found or access denied." };
     }
@@ -412,6 +604,7 @@ export class PaymentService {
   async setStudentBalance(args: {
     role: Role;
     departmentId: number | null;
+    userId: number;
     publicStudentId: string;
     targetBalance: number;
   }) {
@@ -419,13 +612,20 @@ export class PaymentService {
     const conn = await pool.getConnection();
     try {
       await conn.beginTransaction();
-      const studentPk = await this.assertStudentAccess(args.publicStudentId, args.role, args.departmentId, conn);
+      const creatorForTotals = paymentCreatorUserId(args.role, args.userId);
+      const studentPk = await this.assertStudentAccess(
+        args.publicStudentId,
+        args.role,
+        args.departmentId,
+        args.userId,
+        conn,
+      );
       if (!studentPk) {
         await conn.rollback();
         return { ok: false as const, status: 404, message: "Student not found or access denied." };
       }
 
-      const totalsBefore = await this.getStudentTotals(studentPk, conn);
+      const totalsBefore = await this.getStudentTotals(studentPk, creatorForTotals, conn);
       if (target < 0 || target > totalsBefore.totalFine) {
         await conn.rollback();
         return { ok: false as const, status: 400, message: "Balance must be between 0 and Total Fine." };
@@ -436,6 +636,10 @@ export class PaymentService {
       const clampedTarget = Math.min(target, payableTotal);
       let desiredPaid = clampMoney(payableTotal - clampedTarget);
 
+      const balanceFineCreatorSql =
+        creatorForTotals != null ? " AND e.created_by = ? " : "";
+      const balanceFineParams =
+        creatorForTotals != null ? [studentPk, creatorForTotals] : [studentPk];
       const [fineRows] = await conn.execute<BalanceFineRow[]>(
         `
         SELECT f.id, f.amount, f.paid_amount, f.status
@@ -443,9 +647,10 @@ export class PaymentService {
         INNER JOIN events e ON e.id = f.event_id
         WHERE f.student_id = ?
           AND e.status = 'Completed'
+          ${balanceFineCreatorSql}
         ORDER BY f.id ASC
         `,
-        [studentPk],
+        balanceFineParams,
       );
 
       for (const fine of fineRows) {
@@ -467,7 +672,7 @@ export class PaymentService {
         return { ok: false as const, status: 400, message: "Unable to apply requested balance change." };
       }
 
-      const totalsAfter = await this.getStudentTotals(studentPk, conn);
+      const totalsAfter = await this.getStudentTotals(studentPk, creatorForTotals, conn);
       await conn.commit();
       return {
         ok: true as const,

@@ -28,16 +28,26 @@ export function generateAuthToken(user: { id: number; username: string; role: st
   );
 }
 
-export function generateDepartmentToken(department: { department_id: number; department_name: string; department_code: string }) {
-  console.log("generateDepartmentToken payload:", department);
+/** Dept homepage sign-in: include full user identity so governors can use attendance/dashboard APIs over httpOnly cookies. */
+export function generateDepartmentToken(payload: {
+  id: number;
+  username: string;
+  role: string;
+  department_id: number;
+  department_name: string;
+  department_code: string;
+}) {
   return jwt.sign(
-    { 
-      department_id: department.department_id,
-      department_name: department.department_name,
-      department_code: department.department_code
+    {
+      id: payload.id,
+      username: payload.username,
+      role: payload.role,
+      department_id: payload.department_id,
+      department_name: payload.department_name,
+      department_code: payload.department_code,
     },
     env.jwtSecret,
-    { expiresIn: "7d" }
+    { expiresIn: "7d" },
   );
 }
 

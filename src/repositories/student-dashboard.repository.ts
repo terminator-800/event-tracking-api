@@ -8,16 +8,23 @@ export interface StudentListRow extends RowDataPacket {
   course_code: string;
   major: string | null;
   department_id: number;
+  year_level: number | string | null;
   total_events: number;
   events_attended: number;
 }
 
-/** Latest enrollment per student + program + stats vs completed eligible events. */
+/** Latest enrollment per student + program + stats vs completed eligible events.
+ * When {@link createdByUserId} is set, only counts events that user created (`events.created_by`). */
 export async function findStudentsWithAttendanceStats(
   departmentId: number | null,
+  createdByUserId: number | null = null,
 ): Promise<StudentListRow[]> {
   const deptClause = departmentId == null ? "1=1" : "p.department_id = ?";
+  const eventCreatorClause =
+    createdByUserId != null ? " AND ev.created_by = ? " : "";
+
   const params: (string | number)[] = [];
+  if (createdByUserId != null) params.push(createdByUserId);
   if (departmentId != null) params.push(departmentId);
 
   const [rows] = await pool.execute<StudentListRow[]>(
@@ -29,6 +36,7 @@ export async function findStudentsWithAttendanceStats(
       p.course_code AS course_code,
       p.major AS major,
       p.department_id AS department_id,
+      en.year_level AS year_level,
       COUNT(DISTINCT CASE
         WHEN ev.id IS NOT NULL
          AND (
@@ -40,14 +48,60 @@ export async function findStudentsWithAttendanceStats(
             OR EXISTS (
               SELECT 1 FROM event_audiences ea1
               WHERE ea1.event_id = ev.id
-                AND (ea1.year_level IS NULL OR ea1.year_level = en.year_level)
+                AND (
+                  ea1.year_level IS NULL
+                  OR CAST(ea1.year_level AS UNSIGNED) = CAST(en.year_level AS UNSIGNED)
+                  OR EXISTS (
+                    SELECT 1 FROM attendance ay1
+                    WHERE ay1.event_id = ev.id AND ay1.student_id = s.id
+                  )
+                  OR EXISTS (
+                    SELECT 1 FROM fines fz1
+                    WHERE fz1.event_id = ev.id AND fz1.student_id = s.id
+                  )
+                )
             )
           ))
           OR EXISTS (
             SELECT 1 FROM event_audiences ea2
             WHERE ea2.event_id = ev.id
-              AND ea2.program_id = en.program_id
-              AND (ea2.year_level IS NULL OR ea2.year_level = en.year_level)
+              AND (ea2.department_id IS NULL OR ea2.department_id = p.department_id)
+              AND (ea2.program_id IS NULL OR ea2.program_id = en.program_id)
+              AND (
+                ea2.year_level IS NULL
+                OR CAST(ea2.year_level AS UNSIGNED) = CAST(en.year_level AS UNSIGNED)
+                OR EXISTS (
+                  SELECT 1 FROM attendance ay2
+                  WHERE ay2.event_id = ev.id AND ay2.student_id = s.id
+                )
+                OR EXISTS (
+                  SELECT 1 FROM fines fz2
+                  WHERE fz2.event_id = ev.id AND fz2.student_id = s.id
+                )
+              )
+          )
+          OR EXISTS (
+            SELECT 1
+            FROM event_audiences ea_m
+            INNER JOIN programs p_a ON p_a.id = ea_m.program_id
+            WHERE ea_m.event_id = ev.id
+              AND ea_m.program_id IS NOT NULL
+              AND ea_m.program_id <> en.program_id
+              AND UPPER(TRIM(p_a.course_code)) = UPPER(TRIM(p.course_code))
+              AND LOWER(TRIM(COALESCE(p_a.major, ''))) = LOWER(TRIM(COALESCE(p.major, '')))
+              AND (ea_m.department_id IS NULL OR ea_m.department_id = p.department_id)
+              AND (
+                ea_m.year_level IS NULL
+                OR CAST(ea_m.year_level AS UNSIGNED) = CAST(en.year_level AS UNSIGNED)
+                OR EXISTS (
+                  SELECT 1 FROM attendance ay3
+                  WHERE ay3.event_id = ev.id AND ay3.student_id = s.id
+                )
+                OR EXISTS (
+                  SELECT 1 FROM fines fz3
+                  WHERE fz3.event_id = ev.id AND fz3.student_id = s.id
+                )
+              )
           )
         )
         THEN ev.id
@@ -63,14 +117,60 @@ export async function findStudentsWithAttendanceStats(
             OR EXISTS (
               SELECT 1 FROM event_audiences ea1
               WHERE ea1.event_id = ev.id
-                AND (ea1.year_level IS NULL OR ea1.year_level = en.year_level)
+                AND (
+                  ea1.year_level IS NULL
+                  OR CAST(ea1.year_level AS UNSIGNED) = CAST(en.year_level AS UNSIGNED)
+                  OR EXISTS (
+                    SELECT 1 FROM attendance ay1b
+                    WHERE ay1b.event_id = ev.id AND ay1b.student_id = s.id
+                  )
+                  OR EXISTS (
+                    SELECT 1 FROM fines fz1b
+                    WHERE fz1b.event_id = ev.id AND fz1b.student_id = s.id
+                  )
+                )
             )
           ))
           OR EXISTS (
             SELECT 1 FROM event_audiences ea2
             WHERE ea2.event_id = ev.id
-              AND ea2.program_id = en.program_id
-              AND (ea2.year_level IS NULL OR ea2.year_level = en.year_level)
+              AND (ea2.department_id IS NULL OR ea2.department_id = p.department_id)
+              AND (ea2.program_id IS NULL OR ea2.program_id = en.program_id)
+              AND (
+                ea2.year_level IS NULL
+                OR CAST(ea2.year_level AS UNSIGNED) = CAST(en.year_level AS UNSIGNED)
+                OR EXISTS (
+                  SELECT 1 FROM attendance ay2b
+                  WHERE ay2b.event_id = ev.id AND ay2b.student_id = s.id
+                )
+                OR EXISTS (
+                  SELECT 1 FROM fines fz2b
+                  WHERE fz2b.event_id = ev.id AND fz2b.student_id = s.id
+                )
+              )
+          )
+          OR EXISTS (
+            SELECT 1
+            FROM event_audiences ea_mb
+            INNER JOIN programs p_ab ON p_ab.id = ea_mb.program_id
+            WHERE ea_mb.event_id = ev.id
+              AND ea_mb.program_id IS NOT NULL
+              AND ea_mb.program_id <> en.program_id
+              AND UPPER(TRIM(p_ab.course_code)) = UPPER(TRIM(p.course_code))
+              AND LOWER(TRIM(COALESCE(p_ab.major, ''))) = LOWER(TRIM(COALESCE(p.major, '')))
+              AND (ea_mb.department_id IS NULL OR ea_mb.department_id = p.department_id)
+              AND (
+                ea_mb.year_level IS NULL
+                OR CAST(ea_mb.year_level AS UNSIGNED) = CAST(en.year_level AS UNSIGNED)
+                OR EXISTS (
+                  SELECT 1 FROM attendance ay3b
+                  WHERE ay3b.event_id = ev.id AND ay3b.student_id = s.id
+                )
+                OR EXISTS (
+                  SELECT 1 FROM fines fz3b
+                  WHERE fz3b.event_id = ev.id AND fz3b.student_id = s.id
+                )
+              )
           )
         )
         AND att.id IS NOT NULL
@@ -83,6 +183,7 @@ export async function findStudentsWithAttendanceStats(
     )
     INNER JOIN programs p ON p.id = en.program_id
     LEFT JOIN events ev ON ev.status = 'Completed'
+      ${eventCreatorClause}
     LEFT JOIN attendance att ON att.event_id = ev.id AND att.student_id = s.id
     WHERE ${deptClause}
     GROUP BY s.id, s.student_id, s.first_name, s.middle_name, s.last_name, p.course_code, p.major, p.department_id, en.id, en.year_level
@@ -110,7 +211,27 @@ export async function findCompletedEventsForStudent(
   studentPk: number,
   enrollmentProgramId: number,
   enrollmentYearLevel: number,
+  createdByUserId: number | null = null,
 ): Promise<EventHistoryDbRow[]> {
+  const creatorClause =
+    createdByUserId != null ? " AND ev.created_by = ? " : "";
+
+  const params: (string | number | null)[] = [studentPk, studentPk];
+  if (createdByUserId != null) params.push(createdByUserId);
+  params.push(
+    enrollmentYearLevel,
+    studentPk,
+    studentPk,
+    enrollmentProgramId,
+    enrollmentYearLevel,
+    studentPk,
+    studentPk,
+    enrollmentProgramId,
+    enrollmentYearLevel,
+    studentPk,
+    studentPk,
+  );
+
   const [rows] = await pool.execute<EventHistoryDbRow[]>(
     `
     SELECT
@@ -134,6 +255,7 @@ export async function findCompletedEventsForStudent(
     FROM events ev
     LEFT JOIN attendance att ON att.event_id = ev.id AND att.student_id = ?
     WHERE ev.status = 'Completed'
+      ${creatorClause}
       AND (
         (ev.is_all_departments = 1 AND (
           NOT EXISTS (
@@ -143,19 +265,68 @@ export async function findCompletedEventsForStudent(
           OR EXISTS (
             SELECT 1 FROM event_audiences ea1
             WHERE ea1.event_id = ev.id
-              AND (ea1.year_level IS NULL OR ea1.year_level = ?)
+              AND (
+                ea1.year_level IS NULL
+                OR CAST(ea1.year_level AS UNSIGNED) = CAST(? AS UNSIGNED)
+                OR EXISTS (
+                  SELECT 1 FROM attendance ay_inst
+                  WHERE ay_inst.event_id = ev.id AND ay_inst.student_id = ?
+                )
+                OR EXISTS (
+                  SELECT 1 FROM fines fz_inst
+                  WHERE fz_inst.event_id = ev.id AND fz_inst.student_id = ?
+                )
+              )
           )
         ))
         OR EXISTS (
-          SELECT 1 FROM event_audiences ea2
+          SELECT 1
+          FROM event_audiences ea2
+          INNER JOIN programs p_student ON p_student.id = ?
           WHERE ea2.event_id = ev.id
-            AND ea2.program_id = ?
-            AND (ea2.year_level IS NULL OR ea2.year_level = ?)
+            AND (ea2.department_id IS NULL OR ea2.department_id = p_student.department_id)
+            AND (ea2.program_id IS NULL OR ea2.program_id = p_student.id)
+            AND (
+              ea2.year_level IS NULL
+              OR CAST(ea2.year_level AS UNSIGNED) = CAST(? AS UNSIGNED)
+              OR EXISTS (
+                SELECT 1 FROM attendance ay_dep
+                WHERE ay_dep.event_id = ev.id AND ay_dep.student_id = ?
+              )
+              OR EXISTS (
+                SELECT 1 FROM fines fz_dep
+                WHERE fz_dep.event_id = ev.id AND fz_dep.student_id = ?
+              )
+            )
+        )
+        OR EXISTS (
+          SELECT 1
+          FROM event_audiences ea_m
+          INNER JOIN programs p_aud ON p_aud.id = ea_m.program_id
+          INNER JOIN programs p_en ON p_en.id = ?
+          WHERE ea_m.event_id = ev.id
+            AND ea_m.program_id IS NOT NULL
+            AND ea_m.program_id <> p_en.id
+            AND UPPER(TRIM(p_aud.course_code)) = UPPER(TRIM(p_en.course_code))
+            AND LOWER(TRIM(COALESCE(p_aud.major, ''))) = LOWER(TRIM(COALESCE(p_en.major, '')))
+            AND (ea_m.department_id IS NULL OR ea_m.department_id = p_en.department_id)
+            AND (
+              ea_m.year_level IS NULL
+              OR CAST(ea_m.year_level AS UNSIGNED) = CAST(? AS UNSIGNED)
+              OR EXISTS (
+                SELECT 1 FROM attendance ay_maj
+                WHERE ay_maj.event_id = ev.id AND ay_maj.student_id = ?
+              )
+              OR EXISTS (
+                SELECT 1 FROM fines fz_maj
+                WHERE fz_maj.event_id = ev.id AND fz_maj.student_id = ?
+              )
+            )
         )
       )
     ORDER BY ev.date DESC, ev.id DESC
     `,
-    [studentPk, studentPk, enrollmentYearLevel, enrollmentProgramId, enrollmentYearLevel],
+    params,
   );
   return rows;
 }

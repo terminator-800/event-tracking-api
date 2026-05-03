@@ -9,11 +9,12 @@ export class PaymentController {
     try {
       const role = req.user?.role as Role | undefined;
       const departmentId = req.user?.department_id ?? null;
-      if (!role) {
+      const userId = req.user?.id;
+      if (!role || userId == null) {
         res.status(401).json({ message: "Unauthorized" });
         return;
       }
-      const data = await paymentService.listPaymentStudents(role, departmentId);
+      const data = await paymentService.listPaymentStudents(role, departmentId, userId);
       res.status(200).json(data);
     } catch (error) {
       console.error("[PaymentController.list]", error);
@@ -64,7 +65,8 @@ export class PaymentController {
     try {
       const role = req.user?.role as Role | undefined;
       const departmentId = req.user?.department_id ?? null;
-      if (!role) {
+      const userId = req.user?.id;
+      if (!role || userId == null) {
         res.status(401).json({ message: "Unauthorized" });
         return;
       }
@@ -74,7 +76,7 @@ export class PaymentController {
         res.status(400).json({ message: "Invalid fine id." });
         return;
       }
-      const result = await paymentService.updateFineAmount({ role, departmentId, fineId, amount });
+      const result = await paymentService.updateFineAmount({ role, departmentId, userId, fineId, amount });
       if (!result.ok) {
         res.status(result.status).json({ message: result.message });
         return;
@@ -90,7 +92,8 @@ export class PaymentController {
     try {
       const role = req.user?.role as Role | undefined;
       const departmentId = req.user?.department_id ?? null;
-      if (!role) {
+      const userId = req.user?.id;
+      if (!role || userId == null) {
         res.status(401).json({ message: "Unauthorized" });
         return;
       }
@@ -103,6 +106,7 @@ export class PaymentController {
       const result = await paymentService.setStudentBalance({
         role,
         departmentId,
+        userId,
         publicStudentId: studentId,
         targetBalance,
       });

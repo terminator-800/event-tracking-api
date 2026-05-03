@@ -27,21 +27,59 @@ export const ADMIN_ROLES: Role[] = ["admin", "csg_president"];
 /** `null` = institution-wide roster (admins/president). Otherwise restrict to programs in this department. */
 export type AttendanceRosterDepartmentScope = number | null;
 
+/** Same source as scoped event list — use when JWT may omit department_id */
+export async function getUserDepartmentIdForAttendance(userId: number): Promise<number | null> {
+  const [userRows]: any = await pool.execute(
+    `SELECT department_id FROM users WHERE id = ? LIMIT 1`,
+    [userId],
+  );
+  if (!userRows.length || userRows[0].department_id == null) return null;
+  const n = Number(userRows[0].department_id);
+  return Number.isFinite(n) ? n : null;
+}
+
+function parseAudienceEntries(raw: unknown): Array<{ department_id?: unknown }> {
+  if (raw == null) return [];
+  if (Array.isArray(raw)) {
+    return raw.filter((item): item is { department_id?: unknown } =>
+      item != null && typeof item === "object",
+    );
+  }
+  if (Buffer.isBuffer(raw)) {
+    return parseAudienceEntries(raw.toString("utf8"));
+  }
+  if (typeof raw === "string") {
+    const s = raw.trim();
+    if (!s) return [];
+    try {
+      const parsed = JSON.parse(s) as unknown;
+      return parseAudienceEntries(parsed);
+    } catch {
+      return [];
+    }
+  }
+  return [];
+}
+
 export async function selectScopedEvents(userRole: Role, userId: number): Promise<ScopedEventRow[]> {
-  if (ADMIN_ROLES.includes(userRole)) {
-    const [rows] = await pool.execute<ScopedEventRow[]>(
-      `SELECT
-        e.*,
-        JSON_ARRAYAGG(
+  const audienceAggSql = `JSON_ARRAYAGG(
           JSON_OBJECT(
             'department_id',   ea.department_id,
             'department_name', d.name,
+            'department_code', d.code,
             'program_id',      ea.program_id,
             'course_code',     p.course_code,
             'course_name',     p.course_name,
+            'major',           NULLIF(TRIM(p.major), ''),
             'year_level',      ea.year_level
           )
-        ) AS audiences
+        ) AS audiences`;
+
+  if (userRole === "admin") {
+    const [rows] = await pool.execute<ScopedEventRow[]>(
+      `SELECT
+        e.*,
+        ${audienceAggSql}
       FROM events e
       LEFT JOIN event_audiences ea ON ea.event_id = e.id
       LEFT JOIN departments d      ON d.id = ea.department_id
@@ -52,38 +90,42 @@ export async function selectScopedEvents(userRole: Role, userId: number): Promis
     return rows;
   }
 
-  const [userRows]: any = await pool.execute(
-    `SELECT department_id FROM users WHERE id = ? LIMIT 1`,
-    [userId],
-  );
-  if (!userRows.length || !userRows[0].department_id) {
+  if (userRole === "csg_president") {
+    const [rows] = await pool.execute<ScopedEventRow[]>(
+      `SELECT
+        e.*,
+        ${audienceAggSql}
+      FROM events e
+      LEFT JOIN event_audiences ea ON ea.event_id = e.id
+      LEFT JOIN departments d      ON d.id = ea.department_id
+      LEFT JOIN programs p         ON p.id = ea.program_id
+      WHERE e.created_by = ?
+      GROUP BY e.id
+      ORDER BY e.date DESC`,
+      [userId],
+    );
+    return rows;
+  }
+
+  const deptId = await getUserDepartmentIdForAttendance(userId);
+  if (deptId == null) {
     return [];
   }
-  const deptId = userRows[0].department_id;
 
   const [rows] = await pool.execute<ScopedEventRow[]>(
     `SELECT
       e.*,
-      JSON_ARRAYAGG(
-        JSON_OBJECT(
-          'department_id',   ea.department_id,
-          'department_name', d.name,
-          'program_id',      ea.program_id,
-          'course_code',     p.course_code,
-          'course_name',     p.course_name,
-          'year_level',      ea.year_level
-        )
-      ) AS audiences
+      ${audienceAggSql}
     FROM events e
     LEFT JOIN event_audiences ea ON ea.event_id = e.id
       AND (e.is_all_departments = 1 OR ea.department_id = ?)
     LEFT JOIN departments d      ON d.id = ea.department_id
     LEFT JOIN programs p         ON p.id = ea.program_id
-    WHERE e.is_all_departments = 1
-      OR ea.department_id = ?
+    WHERE (e.is_all_departments = 1 OR ea.department_id = ?)
+      AND e.created_by = ?
     GROUP BY e.id
     ORDER BY e.date DESC`,
-    [deptId, deptId],
+    [deptId, deptId, userId],
   );
   return rows;
 }
@@ -165,6 +207,7 @@ export async function countEligibleStudents(
        WHERE EXISTS (
          SELECT 1 FROM event_audiences ea
          WHERE ea.event_id = ?
+           AND (ea.department_id IS NULL OR ea.department_id = p.department_id)
            AND (ea.program_id IS NULL OR ea.program_id = en.program_id)
            AND (ea.year_level IS NULL OR ea.year_level = en.year_level)
        )
@@ -180,9 +223,11 @@ export async function countEligibleStudents(
      INNER JOIN enrollments en ON en.id = (
        SELECT e2.id FROM enrollments e2 WHERE e2.student_id = s.id ORDER BY e2.id DESC LIMIT 1
      )
+     INNER JOIN programs p ON p.id = en.program_id
      WHERE EXISTS (
        SELECT 1 FROM event_audiences ea
        WHERE ea.event_id = ?
+         AND (ea.department_id IS NULL OR ea.department_id = p.department_id)
          AND (ea.program_id IS NULL OR ea.program_id = en.program_id)
          AND (ea.year_level IS NULL OR ea.year_level = en.year_level)
      )`,
@@ -191,18 +236,12 @@ export async function countEligibleStudents(
   return Number(rows[0]?.c ?? 0);
 }
 
-function attendedConditionSql(duration: string): string {
-  switch (duration) {
-    case "Whole Day":
-      return `a.am_time_in IS NOT NULL AND a.pm_time_in IS NOT NULL`;
-    case "AM Only":
-      return `a.am_time_in IS NOT NULL`;
-    case "PM Only":
-      return `a.pm_time_in IS NOT NULL`;
-    case "Half Day":
-    default:
-      return `(a.am_time_in IS NOT NULL OR a.pm_time_in IS NOT NULL)`;
-  }
+/**
+ * Must match `studentAttended` in attendance-page.controller.ts:
+ * any recorded time in/out in any slot counts as attended for totals and absence math.
+ */
+function attendedConditionSql(_duration: string): string {
+  return `(a.am_time_in IS NOT NULL OR a.am_time_out IS NOT NULL OR a.pm_time_in IS NOT NULL OR a.pm_time_out IS NOT NULL)`;
 }
 
 export async function countAttendedStudents(
@@ -239,6 +278,7 @@ export interface EventStudentRow extends RowDataPacket {
   full_name: string;
   course_code: string;
   major: string | null;
+  year_level: number | string | null;
   am_time_in: string | null;
   am_time_out: string | null;
   pm_time_in: string | null;
@@ -272,6 +312,7 @@ export async function selectStudentsForEventDetail(
         TRIM(CONCAT_WS(' ', s.first_name, NULLIF(TRIM(s.middle_name), ''), s.last_name)) AS full_name,
         p.course_code AS course_code,
         NULLIF(TRIM(p.major), '') AS major,
+        en.year_level AS year_level,
         a.am_time_in,
         a.am_time_out,
         a.pm_time_in,
@@ -306,6 +347,7 @@ export async function selectStudentsForEventDetail(
       TRIM(CONCAT_WS(' ', s.first_name, NULLIF(TRIM(s.middle_name), ''), s.last_name)) AS full_name,
       p.course_code AS course_code,
       NULLIF(TRIM(p.major), '') AS major,
+      en.year_level AS year_level,
       a.am_time_in,
       a.am_time_out,
       a.pm_time_in,
@@ -320,6 +362,7 @@ export async function selectStudentsForEventDetail(
      WHERE EXISTS (
        SELECT 1 FROM event_audiences ea
        WHERE ea.event_id = ?
+         AND (ea.department_id IS NULL OR ea.department_id = p.department_id)
          AND (ea.program_id IS NULL OR ea.program_id = en.program_id)
          AND (ea.year_level IS NULL OR ea.year_level = en.year_level)
      )
@@ -338,14 +381,8 @@ export function userCanAccessEvent(
   if (ADMIN_ROLES.includes(userRole)) return true;
   if (!departmentId) return false;
   if (Number(eventRow.is_all_departments) === 1) return true;
-  try {
-    const aud = eventRow.audiences ? JSON.parse(eventRow.audiences as unknown as string) : [];
-    if (!Array.isArray(aud)) return false;
-    return aud.some(
-      (a: { department_id?: number | null }) =>
-        a?.department_id != null && Number(a.department_id) === Number(departmentId),
-    );
-  } catch {
-    return false;
-  }
+  const aud = parseAudienceEntries(eventRow.audiences as unknown);
+  return aud.some(
+    (a) => a?.department_id != null && Number(a.department_id) === Number(departmentId),
+  );
 }
