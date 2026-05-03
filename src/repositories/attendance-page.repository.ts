@@ -19,6 +19,7 @@ export interface ScopedEventRow extends RowDataPacket {
   am_grace_out: number;
   pm_grace_in: number;
   pm_grace_out: number;
+  audience_notes: string | null;
   audiences: string | null;
 }
 
