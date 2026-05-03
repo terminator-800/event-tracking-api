@@ -166,8 +166,26 @@ private isLateArrival(scheduledIn: string, graceMinutes: number, currentTime: st
   return currentMinutes > scheduledMinutes + graceMinutes;
 }
 
-private determineSlot(currentTime: string, pmTimeIn: string): "AM" | "PM" {
-  return currentTime < (pmTimeIn ?? "12:00:00") ? "AM" : "PM";
+/**
+ * Must match how the kiosk decides AM vs PM for recording columns (`am_*` vs `pm_*`).
+ * AM-only events often have `pm_time_in` NULL — comparing only to a noon fallback wrongly
+ * routes afternoon taps to PM so `pm_time_out` fills while reports read `am_time_out`.
+ */
+private determineSlot(
+  currentTime: string,
+  event: { duration?: string; pm_time_in?: string | null; am_time_in?: string | null },
+): "AM" | "PM" {
+  const d = String(event?.duration ?? "");
+  if (d === "AM Only") return "AM";
+  if (d === "PM Only") return "PM";
+  if (d === "Half Day") {
+    const hasAm = event?.am_time_in != null && String(event.am_time_in).trim() !== "";
+    const hasPm = event?.pm_time_in != null && String(event.pm_time_in).trim() !== "";
+    if (hasAm && !hasPm) return "AM";
+    if (!hasAm && hasPm) return "PM";
+  }
+  const pmIn = event?.pm_time_in ?? "12:00:00";
+  return currentTime < pmIn ? "AM" : "PM";
 }
 
 private canRecordTimeOut(slot: "AM" | "PM", event: any, currentTime: string): boolean {
@@ -279,7 +297,7 @@ public recordAttendance = async (req: Request, res: Response): Promise<void> => 
       return;
     }
 
-    const slot = this.determineSlot(currentTime, event.pm_time_in);
+    const slot = this.determineSlot(currentTime, event);
     const isAM = slot === "AM";
     const attendanceRow = await this.findAttendanceRow(student.id, event.id);
     const { timeInDone, timeOutDone } = this.getSlotAttendanceStatus(attendanceRow, slot);

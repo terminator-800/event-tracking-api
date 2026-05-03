@@ -4,6 +4,9 @@ import { getManilaDateTime } from "../utils/manilaDateTime";
 
 let isCronRunInProgress = false;
 
+/** Hours after scheduled session end (`am_time_out` / `pm_time_out`) before `Ongoing` → `Completed`. */
+const COMPLETION_GRACE_HOURS = 3;
+
 async function markOngoingEvents(currentDate: string, currentTime: string): Promise<number> {
   const [result] = await pool.execute(
     `UPDATE events
@@ -21,14 +24,16 @@ async function markCompletedEvents(currentDate: string, currentTime: string): Pr
   const [result] = await pool.execute(
     `UPDATE events
      SET status = 'Completed'
-     WHERE date = ?
-       AND status = 'Ongoing'
+     WHERE status = 'Ongoing'
        AND (
-         (duration = 'AM Only'                    AND am_time_out < ?)
-         OR (duration = 'PM Only'                 AND pm_time_out < ?)
-         OR (duration IN ('Whole Day', 'Half Day') AND pm_time_out < ?)
+         (duration = 'AM Only' AND am_time_out IS NOT NULL
+           AND DATE_ADD(TIMESTAMP(date, am_time_out), INTERVAL ${COMPLETION_GRACE_HOURS} HOUR) <= TIMESTAMP(?, ?))
+         OR (duration = 'PM Only' AND pm_time_out IS NOT NULL
+           AND DATE_ADD(TIMESTAMP(date, pm_time_out), INTERVAL ${COMPLETION_GRACE_HOURS} HOUR) <= TIMESTAMP(?, ?))
+         OR (duration IN ('Whole Day', 'Half Day') AND pm_time_out IS NOT NULL
+           AND DATE_ADD(TIMESTAMP(date, pm_time_out), INTERVAL ${COMPLETION_GRACE_HOURS} HOUR) <= TIMESTAMP(?, ?))
        )`,
-    [currentDate, currentTime, currentTime, currentTime]
+    [currentDate, currentTime, currentDate, currentTime, currentDate, currentTime]
   );
   return (result as any).affectedRows;
 }
@@ -101,12 +106,14 @@ async function generateEndOfEventFines(currentDate: string): Promise<void> {
         [event.id, event.fine_amount, event.id, ...eligibleParams]
       );
 
+      // Second fine when there is also no AM time out (full AM absence = Absent AM + this row).
       await pool.execute(
         `INSERT IGNORE INTO fines (student_id, event_id, attendance_id, reason, amount)
          SELECT es.student_id, ?, NULL, 'Absent AM Time Out', ?
          FROM ${eligibleStudentsCte}
          LEFT JOIN attendance a ON a.student_id = es.student_id AND a.event_id = ?
-         WHERE a.id IS NULL OR a.am_time_in IS NULL`,
+         WHERE (a.id IS NULL OR a.am_time_in IS NULL)
+           AND (a.id IS NULL OR a.am_time_out IS NULL)`,
         [event.id, event.fine_amount, event.id, ...eligibleParams]
       );
 
@@ -135,7 +142,8 @@ async function generateEndOfEventFines(currentDate: string): Promise<void> {
          SELECT es.student_id, ?, NULL, 'Absent PM Time Out', ?
          FROM ${eligibleStudentsCte}
          LEFT JOIN attendance a ON a.student_id = es.student_id AND a.event_id = ?
-         WHERE a.id IS NULL OR a.pm_time_in IS NULL`,
+         WHERE (a.id IS NULL OR a.pm_time_in IS NULL)
+           AND (a.id IS NULL OR a.pm_time_out IS NULL)`,
         [event.id, event.fine_amount, event.id, ...eligibleParams]
       );
 
@@ -179,7 +187,7 @@ async function updateEventStatuses(): Promise<void> {
     console.log(
       `[EventCron] ${currentDate} ${currentTime} | ` +
       `Ongoing: ${ongoing} | ` +
-      `Completed: ${completed} | ` +
+      `Completed (+${COMPLETION_GRACE_HOURS}h after session end): ${completed} | ` +
       `Stalled→Completed: ${stalled}`
     );
   } catch (error) {
