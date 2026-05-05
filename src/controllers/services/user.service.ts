@@ -1,14 +1,19 @@
 import { pool } from "../../config/db";
 import { Role } from "../../types/express";
 import bcrypt from "bcrypt";
+import { ResultSetHeader, RowDataPacket } from "mysql2/promise";
 
 interface RegisterPayload {
   department: string;
-  email: string;
   major: string;
   password: string;
   role: Role;
   username: string;
+}
+
+interface UpdateUserPayload {
+  username?: string;
+  password?: string;
 }
 
 interface FailResult {
@@ -39,26 +44,10 @@ const GOVERNOR_ROLES: Role[] = [
 
 // ── DB Helpers ────────────────────────────────────────────────────────────────
 
-async function findStudentByEmail(email: string) {
-  const [rows]: any = await pool.execute(
-    `SELECT id FROM students WHERE email = ?`,
-    [email]
-  );
-  return rows.length === 0 ? null : rows[0];
-}
-
 async function isUsernameTaken(username: string): Promise<boolean> {
   const [rows]: any = await pool.execute(
     `SELECT id FROM users WHERE username = ?`,
     [username]
-  );
-  return rows.length > 0;
-}
-
-async function hasExistingAccount(studentId: number): Promise<boolean> {
-  const [rows]: any = await pool.execute(
-    `SELECT id FROM users WHERE student_id = ?`,
-    [studentId]
   );
   return rows.length > 0;
 }
@@ -79,26 +68,10 @@ async function findProgramId(major: string, departmentId: number): Promise<numbe
   return rows.length === 0 ? null : rows[0].id;
 }
 
-async function getDepartmentIdByStudentId(studentId: number): Promise<number | null> {
-  const [rows]: any = await pool.execute(
-    `SELECT p.department_id
-     FROM enrollments e
-     JOIN programs p ON e.program_id = p.id
-     WHERE e.student_id = ?
-     LIMIT 1`,
-    [studentId]
-  );
-  return rows.length === 0 ? null : rows[0].department_id;
-}
-
 // ── Role Resolvers ────────────────────────────────────────────────────────────
 
-async function resolveCSGPresidentIds(studentId: number): Promise<FailResult | ResolvedIds> {
-  const departmentId = await getDepartmentIdByStudentId(studentId);
-  if (!departmentId) {
-    return { success: false, status: 404, message: "No enrollment record found for this student." };
-  }
-  return { departmentId, programId: null };
+async function resolveCSGPresidentIds(): Promise<FailResult | ResolvedIds> {
+  return { departmentId: null, programId: null };
 }
 
 async function resolveGovernorIds(department: string, major: string): Promise<FailResult | ResolvedIds> {
@@ -126,7 +99,7 @@ async function insertUser(
   username: string,
   hashedPassword: string,
   role: Role,
-  studentId: number,
+  studentId: number | null,
   departmentId: number | null,
   programId: number | null
 ): Promise<void> {
@@ -140,28 +113,20 @@ async function insertUser(
 // ── Main Service ──────────────────────────────────────────────────────────────
 
 export async function createUser(payload: RegisterPayload): Promise<ServiceResult> {
-  const { department, email, major, password, role, username } = payload;
+  const { department, major, password, role, username } = payload;
   const csg_president = "csg_president";
   try {
-
-    const student = await findStudentByEmail(email);
-    if (!student) {
-      return { success: false, status: 404, message: "No student record found with that email." };
-    }
 
     if (await isUsernameTaken(username)) {
       return { success: false, status: 409, message: "Username already exists." };
     }
 
-    if (await hasExistingAccount(student.id)) {
-      return { success: false, status: 409, message: "Student already has an account." };
-    }
-
     let departmentId: number | null = null;
     let programId: number | null = null;
+    let studentId: number | null = null;
 
     if (role === csg_president) {
-      const resolved = await resolveCSGPresidentIds(student.id);
+      const resolved = await resolveCSGPresidentIds();
       if ("success" in resolved) return resolved;
       ({ departmentId, programId } = resolved);
 
@@ -173,7 +138,7 @@ export async function createUser(payload: RegisterPayload): Promise<ServiceResul
 
     const hashedPassword = await bcrypt.hash(password, 10);
 
-    await insertUser(username, hashedPassword, role, student.id, departmentId, programId);
+    await insertUser(username, hashedPassword, role, studentId, departmentId, programId);
 
     return { success: true, status: 201 };
 
@@ -181,4 +146,75 @@ export async function createUser(payload: RegisterPayload): Promise<ServiceResul
     console.error("createUser error:", error);
     return { success: false, status: 500, message: "Internal server error." };
   }
+}
+
+export async function listUsers() {
+  const [rows] = await pool.execute<RowDataPacket[]>(
+    `SELECT 
+      u.id,
+      u.username,
+      u.role,
+      u.student_id,
+      u.department_id,
+      d.name AS department_name,
+      u.program_id,
+      u.created_at,
+      u.updated_at
+    FROM users u
+    LEFT JOIN departments d ON d.id = u.department_id
+    ORDER BY u.id DESC`,
+  );
+  return rows;
+}
+
+export async function updateUserById(userId: number, payload: UpdateUserPayload): Promise<ServiceResult> {
+  const { username, password } = payload;
+  if (!username && !password) {
+    return { success: false, status: 400, message: "Nothing to update." };
+  }
+
+  const [existingRows] = await pool.execute<RowDataPacket[]>(
+    `SELECT id FROM users WHERE id = ? LIMIT 1`,
+    [userId],
+  );
+  if (existingRows.length === 0) {
+    return { success: false, status: 404, message: "User not found." };
+  }
+
+  if (username) {
+    const [usernameRows] = await pool.execute<RowDataPacket[]>(
+      `SELECT id FROM users WHERE username = ? AND id <> ? LIMIT 1`,
+      [username, userId],
+    );
+    if (usernameRows.length > 0) {
+      return { success: false, status: 409, message: "Username already exists." };
+    }
+  }
+
+  const updates: string[] = [];
+  const values: Array<string | number> = [];
+
+  if (username) {
+    updates.push("username = ?");
+    values.push(username);
+  }
+
+  if (password) {
+    const hashedPassword = await bcrypt.hash(password, 10);
+    updates.push("password = ?");
+    values.push(hashedPassword);
+  }
+
+  values.push(userId);
+  await pool.execute(`UPDATE users SET ${updates.join(", ")} WHERE id = ?`, values);
+
+  return { success: true, status: 200 };
+}
+
+export async function deleteUserById(userId: number): Promise<ServiceResult> {
+  const [result] = await pool.execute<ResultSetHeader>(`DELETE FROM users WHERE id = ?`, [userId]);
+  if (result.affectedRows === 0) {
+    return { success: false, status: 404, message: "User not found." };
+  }
+  return { success: true, status: 200 };
 }
