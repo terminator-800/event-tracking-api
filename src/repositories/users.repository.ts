@@ -13,4 +13,9 @@ export class UserRepository {
         const [rows]: any = await pool.execute(UserQueries.findByUsername, [username]);
         return rows[0] || null;
     }
+
+    async hasAdminUser(): Promise<boolean> {
+        const [rows]: any = await pool.execute(UserQueries.hasAdmin);
+        return rows.length > 0;
+    }
 }
