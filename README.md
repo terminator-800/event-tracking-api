@@ -30,13 +30,9 @@ npm start
 - `GET /health`
 
 
-## 5) Default admin (automatic)
-
-On startup, if there is **no** user with role `admin`, the API creates one using `ADMIN_USERNAME` and `ADMIN_PASSWORD` from `.env.development` (see `src/seed/ensureDefaultAdmin.ts`). Set those before the first run.
-
-Optional manual seed (same logic):
+## 5) Seed Admin
 
 ```bash
 npm run seed:admin
-```
+
 
