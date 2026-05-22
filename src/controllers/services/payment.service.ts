@@ -559,17 +559,7 @@ export class PaymentService {
       params.length ? params : undefined,
     );
 
-    const studentPkList = studentRows.map((row) => Number(row.student_pk));
-    const eventsByStudent = await this.loadEventsByStudentPks(
-      studentPkList,
-      role,
-      departmentId,
-      creatorId,
-    );
-
-    const students = studentRows.map((row) =>
-      this.formatPaymentStudentDto(row, eventsByStudent.get(Number(row.student_pk)) ?? []),
-    );
+    const students = studentRows.map((row) => this.formatPaymentStudentDto(row, []));
 
     return { students };
   }

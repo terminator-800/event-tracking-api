@@ -5,6 +5,39 @@ import { PaymentService } from "./services/payment.service";
 const paymentService = new PaymentService();
 
 export class PaymentController {
+  async getOne(req: Request, res: Response): Promise<void> {
+    try {
+      const role = req.user?.role as Role | undefined;
+      const departmentId = req.user?.department_id ?? null;
+      const userId = req.user?.id;
+      if (!role || userId == null) {
+        res.status(401).json({ message: "Unauthorized" });
+        return;
+      }
+
+      const studentId = String(req.params.studentId ?? "").trim();
+      if (!studentId) {
+        res.status(400).json({ message: "studentId is required." });
+        return;
+      }
+
+      const student = await paymentService.getPaymentStudentByPublicId(
+        role,
+        departmentId,
+        userId,
+        studentId,
+      );
+      if (!student) {
+        res.status(404).json({ message: "Student not found or access denied." });
+        return;
+      }
+      res.status(200).json({ student });
+    } catch (error) {
+      console.error("[PaymentController.getOne]", error);
+      res.status(500).json({ message: "Internal server error." });
+    }
+  }
+
   async list(req: Request, res: Response): Promise<void> {
     try {
       const role = req.user?.role as Role | undefined;

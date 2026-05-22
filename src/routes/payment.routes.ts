@@ -21,6 +21,21 @@ router.get(
   (req, res) => controller.list(req, res),
 );
 
+router.get(
+  "/payments/students/:studentId",
+  authMiddleware,
+  roleMiddleware(
+    "admin",
+    "csg_president",
+    "it_governor",
+    "cba_governor",
+    "ceas_governor",
+    "coc_governor",
+    "chm_governor",
+  ),
+  (req, res) => controller.getOne(req, res),
+);
+
 router.post(
   "/payments/record",
   authMiddleware,
