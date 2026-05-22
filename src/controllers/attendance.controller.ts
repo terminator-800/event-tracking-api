@@ -54,6 +54,14 @@ private async findStudentByStudentId(studentId: string) {
   return (rows as any[])[0] ?? null;
 }
 
+private async findStudentByRfid(rfid: string) {
+  const [rows] = await pool.execute(
+    `SELECT id FROM students WHERE rfid = ?`,
+    [rfid]
+  );
+  return (rows as any[])[0] ?? null;
+}
+
 private async findOngoingEvent(currentDate: string) {
   const [rows] = await pool.execute(
     `SELECT id, duration, fine_amount,
@@ -251,18 +259,33 @@ private async isStudentInEventAudience(studentId: number, eventId: number, isAll
 }
 
 public recordAttendance = async (req: Request, res: Response): Promise<void> => {
-  const { studentId, simulatedTapTime, simulatedDate, attendanceKind, eventId: rawEventId } = req.body;
+  const {
+    studentId: rawStudentId,
+    rfid: rawRfid,
+    simulatedTapTime,
+    simulatedDate,
+    attendanceKind,
+    eventId: rawEventId,
+  } = req.body;
+  const studentId = String(rawStudentId ?? "").trim();
+  const rfid = String(rawRfid ?? "").trim();
   const requestedKind = this.parseAttendanceKind(attendanceKind);
   console.log("[AttendanceController] Received attendance record request:", {
-    studentId,
+    studentId: studentId || undefined,
+    rfid: rfid || undefined,
     simulatedTapTime,
     simulatedDate,
     attendanceKind: requestedKind,
     eventId: rawEventId,
   });
 
-  if (!studentId) {
-    res.status(400).json({ message: "studentId is required." });
+  if (!studentId && !rfid) {
+    res.status(400).json({ message: "studentId or rfid is required." });
+    return;
+  }
+
+  if (studentId && rfid) {
+    res.status(400).json({ message: "Provide either studentId or rfid, not both." });
     return;
   }
 
@@ -272,7 +295,9 @@ public recordAttendance = async (req: Request, res: Response): Promise<void> => 
   });
 
   try {
-    const student = await this.findStudentByStudentId(studentId);
+    const student = rfid
+      ? await this.findStudentByRfid(rfid)
+      : await this.findStudentByStudentId(studentId);
     if (!student) {
       res.status(404).json({ message: "Student not found." });
       return;
