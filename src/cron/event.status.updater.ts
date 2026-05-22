@@ -1,6 +1,7 @@
 import cron from 'node-cron';
 import { pool } from "../config/db";
 import { getManilaDateTime } from "../utils/manilaDateTime";
+import { buildEligibleStudentsQuery } from "../utils/studentEligibilitySql";
 
 let isCronRunInProgress = false;
 
@@ -64,36 +65,25 @@ async function generateEndOfEventFines(currentDate: string): Promise<void> {
     const isAMOnly      = event.duration === 'AM Only';
     const isPMOnly      = event.duration === 'PM Only';
 
-    let eligibleStudentsSql = `SELECT DISTINCT s.id as student_id
-      FROM students s
-      JOIN enrollments e ON e.student_id = s.id`;
-    const eligibleParams: any[] = [];
-
-    if (Number(event.is_all_departments) === 1) {
+    const isAll = Number(event.is_all_departments) === 1;
+    let audienceYearLevel: number | null = null;
+    if (isAll) {
       const [audRows] = await pool.execute(
         `SELECT year_level FROM event_audiences WHERE event_id = ? AND year_level IS NOT NULL LIMIT 1`,
-        [event.id]
+        [event.id],
       );
-      const audience = (audRows as any[])[0];
-      if (audience?.year_level != null) {
-        eligibleStudentsSql += ` WHERE e.year_level = ?`;
-        eligibleParams.push(audience.year_level);
+      const raw = (audRows as any[])[0]?.year_level;
+      if (raw != null) {
+        const yl = Number(raw);
+        if (Number.isFinite(yl)) audienceYearLevel = yl;
       }
-    } else {
-      // Matches event_audiences like CEAS/CBA "All Majors": department_id set, program_id NULL
-      // (JOIN ea.program_id = e.program_id never matches NULL). Align with attendance-page.repository.
-      eligibleStudentsSql += `
-        INNER JOIN programs p ON p.id = e.program_id
-        WHERE EXISTS (
-          SELECT 1 FROM event_audiences ea
-          WHERE ea.event_id = ?
-            AND (ea.department_id IS NULL OR ea.department_id = p.department_id)
-            AND (ea.program_id IS NULL OR ea.program_id = e.program_id)
-            AND (ea.year_level IS NULL OR ea.year_level = e.year_level)
-        )`;
-      eligibleParams.push(event.id);
     }
 
+    const { sql: eligibleStudentsSql, params: eligibleParams } = buildEligibleStudentsQuery(
+      event.id,
+      isAll,
+      audienceYearLevel,
+    );
     const eligibleStudentsCte = `(${eligibleStudentsSql}) es`;
 
     if (isWholeOrHalf || isAMOnly) {

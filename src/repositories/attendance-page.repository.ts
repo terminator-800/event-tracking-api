@@ -1,6 +1,12 @@
 import { RowDataPacket } from "mysql2";
 import { pool } from "../config/db";
 import { Role } from "../types/express";
+import { SQL_STUDENT_FULL_NAME, SQL_STUDENT_YEAR_LEVEL } from "../utils/studentDisplaySql";
+import {
+  buildEligibleStudentsQuery,
+  SQL_LATEST_ENROLLMENT_LEFT_JOIN,
+  SQL_LATEST_PROGRAM_LEFT_JOIN,
+} from "../utils/studentEligibilitySql";
 
 export interface ScopedEventRow extends RowDataPacket {
   id: number;
@@ -131,7 +137,17 @@ export async function selectScopedEvents(userRole: Role, userId: number): Promis
   return rows;
 }
 
-/** Eligible roster size for an event (latest enrollment per student). */
+async function getEventAudienceYearLevel(eventId: number): Promise<number | null> {
+  const [audRows]: any = await pool.execute(
+    `SELECT year_level FROM event_audiences WHERE event_id = ? AND year_level IS NOT NULL LIMIT 1`,
+    [eventId],
+  );
+  if (!audRows.length) return null;
+  const yl = Number(audRows[0].year_level);
+  return Number.isFinite(yl) ? yl : null;
+}
+
+/** Eligible roster size — students table first; enrollment optional for CSV imports. */
 export async function countEligibleStudents(
   eventId: number,
   scopeDepartmentId: AttendanceRosterDepartmentScope = null,
@@ -142,56 +158,13 @@ export async function countEligibleStudents(
   );
   if (!evRows.length) return 0;
   const isAll = Number(evRows[0].is_all_departments) === 1;
+  const audienceYearLevel = await getEventAudienceYearLevel(eventId);
+  const { sql, params } = buildEligibleStudentsQuery(eventId, isAll, audienceYearLevel);
 
   if (isAll) {
-    const [audRows]: any = await pool.execute(
-      `SELECT year_level FROM event_audiences WHERE event_id = ? AND year_level IS NOT NULL LIMIT 1`,
-      [eventId],
-    );
-    const scopedDept = scopeDepartmentId != null ? Number(scopeDepartmentId) : null;
-
-    if (scopedDept != null) {
-      if (!audRows.length) {
-        const [rows]: any = await pool.execute(
-          `SELECT COUNT(DISTINCT s.id) AS c
-           FROM students s
-           INNER JOIN enrollments en ON en.id = (
-             SELECT e2.id FROM enrollments e2 WHERE e2.student_id = s.id ORDER BY e2.id DESC LIMIT 1
-           )
-           INNER JOIN programs p ON p.id = en.program_id
-           WHERE p.department_id = ?`,
-          [scopedDept],
-        );
-        return Number(rows[0]?.c ?? 0);
-      }
-      const yl = audRows[0].year_level;
-      const [rows]: any = await pool.execute(
-        `SELECT COUNT(DISTINCT s.id) AS c
-         FROM students s
-         INNER JOIN enrollments en ON en.id = (
-           SELECT e2.id FROM enrollments e2 WHERE e2.student_id = s.id ORDER BY e2.id DESC LIMIT 1
-         )
-         INNER JOIN programs p ON p.id = en.program_id
-         WHERE en.year_level = ? AND p.department_id = ?`,
-        [yl, scopedDept],
-      );
-      return Number(rows[0]?.c ?? 0);
-    }
-
-    if (!audRows.length) {
-      const [rows]: any = await pool.execute(
-        `SELECT COUNT(DISTINCT s.id) AS c
-         FROM students s
-         INNER JOIN enrollments en ON en.student_id = s.id`,
-      );
-      return Number(rows[0]?.c ?? 0);
-    }
-    const yl = audRows[0].year_level;
     const [rows]: any = await pool.execute(
-      `SELECT COUNT(DISTINCT s.id) AS c
-       FROM students s
-       INNER JOIN enrollments en ON en.student_id = s.id AND en.year_level = ?`,
-      [yl],
+      `SELECT COUNT(*) AS c FROM (${sql}) eligible`,
+      params,
     );
     return Number(rows[0]?.c ?? 0);
   }
@@ -199,41 +172,18 @@ export async function countEligibleStudents(
   if (scopeDepartmentId != null) {
     const dept = Number(scopeDepartmentId);
     const [rows]: any = await pool.execute(
-      `SELECT COUNT(DISTINCT s.id) AS c
-       FROM students s
-       INNER JOIN enrollments en ON en.id = (
-         SELECT e2.id FROM enrollments e2 WHERE e2.student_id = s.id ORDER BY e2.id DESC LIMIT 1
-       )
-       INNER JOIN programs p ON p.id = en.program_id
-       WHERE EXISTS (
-         SELECT 1 FROM event_audiences ea
-         WHERE ea.event_id = ?
-           AND (ea.department_id IS NULL OR ea.department_id = p.department_id)
-           AND (ea.program_id IS NULL OR ea.program_id = en.program_id)
-           AND (ea.year_level IS NULL OR ea.year_level = en.year_level)
-       )
-       AND p.department_id = ?`,
-      [eventId, dept],
+      `SELECT COUNT(*) AS c
+       FROM (${sql}) eligible
+       INNER JOIN students s ON s.id = eligible.student_id
+       ${SQL_LATEST_ENROLLMENT_LEFT_JOIN}
+       ${SQL_LATEST_PROGRAM_LEFT_JOIN}
+       WHERE en.id IS NULL OR p.department_id = ?`,
+      [...params, dept],
     );
     return Number(rows[0]?.c ?? 0);
   }
 
-  const [rows]: any = await pool.execute(
-    `SELECT COUNT(DISTINCT s.id) AS c
-     FROM students s
-     INNER JOIN enrollments en ON en.id = (
-       SELECT e2.id FROM enrollments e2 WHERE e2.student_id = s.id ORDER BY e2.id DESC LIMIT 1
-     )
-     INNER JOIN programs p ON p.id = en.program_id
-     WHERE EXISTS (
-       SELECT 1 FROM event_audiences ea
-       WHERE ea.event_id = ?
-         AND (ea.department_id IS NULL OR ea.department_id = p.department_id)
-         AND (ea.program_id IS NULL OR ea.program_id = en.program_id)
-         AND (ea.year_level IS NULL OR ea.year_level = en.year_level)
-     )`,
-    [eventId],
-  );
+  const [rows]: any = await pool.execute(`SELECT COUNT(*) AS c FROM (${sql}) eligible`, params);
   return Number(rows[0]?.c ?? 0);
 }
 
@@ -258,16 +208,27 @@ export async function countAttendedStudents(
     );
     return Number(rows[0]?.c ?? 0);
   }
+
+  const [evRows]: any = await pool.execute(
+    `SELECT is_all_departments FROM events WHERE id = ? LIMIT 1`,
+    [eventId],
+  );
+  if (evRows.length && Number(evRows[0].is_all_departments) === 1) {
+    const [rows]: any = await pool.execute(
+      `SELECT COUNT(*) AS c FROM attendance a WHERE a.event_id = ? AND (${cond})`,
+      [eventId],
+    );
+    return Number(rows[0]?.c ?? 0);
+  }
+
   const dept = Number(scopeDepartmentId);
   const [rows]: any = await pool.execute(
     `SELECT COUNT(*) AS c
      FROM attendance a
      INNER JOIN students s ON s.id = a.student_id
-     INNER JOIN enrollments en ON en.id = (
-       SELECT e2.id FROM enrollments e2 WHERE e2.student_id = s.id ORDER BY e2.id DESC LIMIT 1
-     )
-     INNER JOIN programs p ON p.id = en.program_id
-     WHERE a.event_id = ? AND (${cond}) AND p.department_id = ?`,
+     ${SQL_LATEST_ENROLLMENT_LEFT_JOIN}
+     ${SQL_LATEST_PROGRAM_LEFT_JOIN}
+     WHERE a.event_id = ? AND (${cond}) AND en.id IS NOT NULL AND p.department_id = ?`,
     [eventId, dept],
   );
   return Number(rows[0]?.c ?? 0);
@@ -297,79 +258,43 @@ export async function selectStudentsForEventDetail(
   );
   if (!evRows.length) return [];
   const isAll = Number(evRows[0].is_all_departments) === 1;
-  const deptFilterSql =
-    scopeDepartmentId != null ? " AND p.department_id = ? " : "";
-  const deptParams: number[] =
-    scopeDepartmentId != null ? [Number(scopeDepartmentId)] : [];
+  const audienceYearLevel = await getEventAudienceYearLevel(eventId);
+  const { sql: eligibleSql, params: eligibleParams } = buildEligibleStudentsQuery(
+    eventId,
+    isAll,
+    audienceYearLevel,
+  );
 
-  if (isAll) {
-    const [audRows]: any = await pool.execute(
-      `SELECT year_level FROM event_audiences WHERE event_id = ? AND year_level IS NOT NULL LIMIT 1`,
-      [eventId],
-    );
-    const baseSql = `SELECT
-        s.id AS student_pk,
-        s.student_id AS student_id,
-        TRIM(CONCAT_WS(' ', s.first_name, NULLIF(TRIM(s.middle_name), ''), s.last_name)) AS full_name,
-        p.course_code AS course_code,
-        NULLIF(TRIM(p.major), '') AS major,
-        en.year_level AS year_level,
-        a.am_time_in,
-        a.am_time_out,
-        a.pm_time_in,
-        a.pm_time_out,
-        (SELECT COALESCE(SUM(f.amount), 0) FROM fines f WHERE f.student_id = s.id AND f.event_id = ?) AS fine_total
-       FROM students s
-       INNER JOIN enrollments en ON en.id = (
-         SELECT e2.id FROM enrollments e2 WHERE e2.student_id = s.id ORDER BY e2.id DESC LIMIT 1
-       )
-       INNER JOIN programs p ON p.id = en.program_id
-       LEFT JOIN attendance a ON a.student_id = s.id AND a.event_id = ?
-       `;
-    if (!audRows.length) {
-      const [rows] = await pool.execute<EventStudentRow[]>(
-        `${baseSql} WHERE 1=1 ${deptFilterSql} ORDER BY full_name ASC`,
-        [eventId, eventId, ...deptParams],
-      );
-      return rows;
-    }
-    const yl = Number(audRows[0].year_level);
-    const [rows] = await pool.execute<EventStudentRow[]>(
-      `${baseSql} WHERE en.year_level = ? ${deptFilterSql} ORDER BY full_name ASC`,
-      [eventId, eventId, yl, ...deptParams],
-    );
-    return rows;
-  }
-
-  const [rows] = await pool.execute<EventStudentRow[]>(
-    `SELECT
+  const baseSql = `SELECT
       s.id AS student_pk,
       s.student_id AS student_id,
-      TRIM(CONCAT_WS(' ', s.first_name, NULLIF(TRIM(s.middle_name), ''), s.last_name)) AS full_name,
+      ${SQL_STUDENT_FULL_NAME} AS full_name,
       p.course_code AS course_code,
       NULLIF(TRIM(p.major), '') AS major,
-      en.year_level AS year_level,
+      ${SQL_STUDENT_YEAR_LEVEL} AS year_level,
       a.am_time_in,
       a.am_time_out,
       a.pm_time_in,
       a.pm_time_out,
       (SELECT COALESCE(SUM(f.amount), 0) FROM fines f WHERE f.student_id = s.id AND f.event_id = ?) AS fine_total
      FROM students s
-     INNER JOIN enrollments en ON en.id = (
-       SELECT e2.id FROM enrollments e2 WHERE e2.student_id = s.id ORDER BY e2.id DESC LIMIT 1
-     )
-     INNER JOIN programs p ON p.id = en.program_id
-     LEFT JOIN attendance a ON a.student_id = s.id AND a.event_id = ?
-     WHERE EXISTS (
-       SELECT 1 FROM event_audiences ea
-       WHERE ea.event_id = ?
-         AND (ea.department_id IS NULL OR ea.department_id = p.department_id)
-         AND (ea.program_id IS NULL OR ea.program_id = en.program_id)
-         AND (ea.year_level IS NULL OR ea.year_level = en.year_level)
-     )
-     ${deptFilterSql}
-     ORDER BY full_name ASC`,
-    [eventId, eventId, eventId, ...deptParams],
+     ${SQL_LATEST_ENROLLMENT_LEFT_JOIN}
+     ${SQL_LATEST_PROGRAM_LEFT_JOIN}
+     INNER JOIN (${eligibleSql}) eligible ON eligible.student_id = s.id
+     LEFT JOIN attendance a ON a.student_id = s.id AND a.event_id = ?`;
+
+  if (isAll || scopeDepartmentId == null) {
+    const [rows] = await pool.execute<EventStudentRow[]>(
+      `${baseSql} ORDER BY full_name ASC`,
+      [eventId, ...eligibleParams, eventId],
+    );
+    return rows;
+  }
+
+  const dept = Number(scopeDepartmentId);
+  const [rows] = await pool.execute<EventStudentRow[]>(
+    `${baseSql} WHERE en.id IS NULL OR p.department_id = ? ORDER BY full_name ASC`,
+    [eventId, ...eligibleParams, eventId, dept],
   );
   return rows;
 }

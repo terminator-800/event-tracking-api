@@ -1,6 +1,7 @@
-  import { Request, Response } from "express";
-  import { pool } from "../config/db";
-  import { getManilaDateTime } from "../utils/manilaDateTime";
+import { Request, Response } from "express";
+import { pool } from "../config/db";
+import { getManilaDateTime } from "../utils/manilaDateTime";
+import { SQL_STUDENT_YEAR_LEVEL } from "../utils/studentDisplaySql";
 
 export class AttendanceController {
 
@@ -197,43 +198,54 @@ private canRecordTimeOut(slot: "AM" | "PM", event: any, currentTime: string): bo
 private async isStudentInEventAudience(studentId: number, eventId: number, isAllDepartments: boolean): Promise<boolean> {
   if (isAllDepartments) {
     const [audienceRows] = await pool.execute(
-      `SELECT year_level FROM event_audiences WHERE event_id = ? LIMIT 1`,
-      [eventId]
+      `SELECT year_level FROM event_audiences WHERE event_id = ? AND year_level IS NOT NULL LIMIT 1`,
+      [eventId],
     );
     const audience = (audienceRows as any[])[0];
-
     if (!audience) return true;
 
     const [rows] = await pool.execute(
-      `SELECT e.id
-      FROM enrollments e
-      WHERE e.student_id = ?
-        AND (? IS NULL OR e.year_level = ?)
-      LIMIT 1`,
-      [studentId, audience.year_level, audience.year_level]
+      `SELECT s.id
+       FROM students s
+       LEFT JOIN enrollments en ON en.id = (
+         SELECT e2.id FROM enrollments e2 WHERE e2.student_id = s.id ORDER BY e2.id DESC LIMIT 1
+       )
+       WHERE s.id = ?
+         AND ${SQL_STUDENT_YEAR_LEVEL} = ?
+       LIMIT 1`,
+      [studentId, audience.year_level],
     );
     return (rows as any[]).length > 0;
   }
 
-  // Department audiences — includes CEAS/CBA "All Majors" (department_id set, program_id NULL).
-  // Plain JOIN ea.program_id = en.program_id never matches NULL.
   const [rows] = await pool.execute(
     `SELECT 1 AS ok
-     FROM enrollments en
-     INNER JOIN programs p ON p.id = en.program_id
-     WHERE en.student_id = ?
-       AND en.id = (
-         SELECT e2.id FROM enrollments e2 WHERE e2.student_id = ? ORDER BY e2.id DESC LIMIT 1
-       )
-       AND EXISTS (
-         SELECT 1 FROM event_audiences ea
-         WHERE ea.event_id = ?
-           AND (ea.department_id IS NULL OR ea.department_id = p.department_id)
-           AND (ea.program_id IS NULL OR ea.program_id = en.program_id)
-           AND (ea.year_level IS NULL OR ea.year_level = en.year_level)
+     FROM students s
+     LEFT JOIN enrollments en ON en.id = (
+       SELECT e2.id FROM enrollments e2 WHERE e2.student_id = s.id ORDER BY e2.id DESC LIMIT 1
+     )
+     LEFT JOIN programs p ON p.id = en.program_id
+     WHERE s.id = ?
+       AND (
+         en.id IS NOT NULL AND EXISTS (
+           SELECT 1 FROM event_audiences ea
+           WHERE ea.event_id = ?
+             AND (ea.department_id IS NULL OR ea.department_id = p.department_id)
+             AND (ea.program_id IS NULL OR ea.program_id = en.program_id)
+             AND (ea.year_level IS NULL OR ea.year_level = ${SQL_STUDENT_YEAR_LEVEL})
+         )
+         OR (
+           en.id IS NULL AND EXISTS (
+             SELECT 1 FROM event_audiences ea2
+             WHERE ea2.event_id = ?
+               AND ea2.program_id IS NULL
+               AND ea2.department_id IS NULL
+               AND (ea2.year_level IS NULL OR ea2.year_level = s.year_level)
+           )
+         )
        )
      LIMIT 1`,
-    [studentId, studentId, eventId]
+    [studentId, eventId, eventId],
   );
   return (rows as any[]).length > 0;
 }

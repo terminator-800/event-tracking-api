@@ -223,7 +223,7 @@ export class StudentDashboardController {
       }
 
       const adminStyleDepartmentBypass: Role[] = ["admin", "csg_president"];
-      if (!adminStyleDepartmentBypass.includes(role)) {
+      if (!adminStyleDepartmentBypass.includes(role) && ctx.program_id > 0) {
         const [progRows] = await pool.execute<RowDataPacket[]>(
           `SELECT department_id FROM programs WHERE id = ? LIMIT 1`,
           [ctx.program_id],
@@ -254,12 +254,7 @@ export class StudentDashboardController {
       const lastAtt = sorted.find((e) => e.attended);
       const lastMiss = sorted.find((e) => !e.attended);
 
-      const [nameRows] = await pool.execute<RowDataPacket[]>(
-        `SELECT TRIM(CONCAT_WS(' ', first_name, NULLIF(TRIM(middle_name), ''), last_name)) AS fn FROM students WHERE id = ?`,
-        [pk],
-      );
-      const displayName =
-        nameRows[0] != null ? String((nameRows[0] as { fn: string }).fn) : studentId;
+      const displayName = ctx.full_name?.trim() || studentId;
 
       const ylDetail = Number(ctx.year_level);
       const yearLevelDetail = Number.isFinite(ylDetail) ? ylDetail : null;

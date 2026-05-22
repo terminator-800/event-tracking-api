@@ -1,5 +1,6 @@
 import { PoolConnection, ResultSetHeader, RowDataPacket } from "mysql2/promise";
 import { pool } from "../../config/db";
+import { SQL_STUDENT_FULL_NAME, SQL_STUDENT_YEAR_LEVEL } from "../../utils/studentDisplaySql";
 import { Role } from "../../types/express";
 import { clampMoney, computeFineStatus } from "../../utils/paymentStatus";
 
@@ -226,10 +227,10 @@ export class PaymentService {
       SELECT
         s.id AS student_pk,
         s.student_id AS student_id,
-        CONCAT(s.last_name, ', ', s.first_name) AS student_name,
+        ${SQL_STUDENT_FULL_NAME} AS student_name,
         p.course_code AS course_code,
         p.major AS major,
-        en.year_level AS year_level,
+        ${SQL_STUDENT_YEAR_LEVEL} AS year_level,
         (
           SELECT COUNT(DISTINCT ev.id)
           FROM events ev
@@ -267,16 +268,15 @@ export class PaymentService {
         COALESCE(SUM(CASE WHEN fe.id IS NOT NULL THEN f.paid_amount ELSE 0 END), 0) AS paid_amount,
         COALESCE(SUM(CASE WHEN fe.id IS NOT NULL AND f.status = 'Waived' THEN GREATEST(f.amount - f.paid_amount, 0) ELSE 0 END), 0) AS waived_amount
       FROM students s
-      INNER JOIN enrollments en ON en.id = (
+      LEFT JOIN enrollments en ON en.id = (
         SELECT e2.id FROM enrollments e2 WHERE e2.student_id = s.id ORDER BY e2.id DESC LIMIT 1
       )
-      INNER JOIN programs p ON p.id = en.program_id
+      LEFT JOIN programs p ON p.id = en.program_id
       LEFT JOIN fines f ON f.student_id = s.id
       LEFT JOIN events fe ON fe.id = f.event_id AND fe.status = 'Completed'
         ${feCreatorSql}
       ${scopedClause}
-      GROUP BY s.id, s.student_id, s.last_name, s.first_name, p.course_code, p.major, en.program_id, en.year_level
-      HAVING total_fine > 0 OR total_events > 0
+      GROUP BY s.id, s.student_id, s.full_name, s.first_name, s.middle_name, s.last_name, s.year_level, p.course_code, p.major, en.program_id, en.year_level
       ORDER BY student_name ASC
       `,
       params.length ? params : undefined,

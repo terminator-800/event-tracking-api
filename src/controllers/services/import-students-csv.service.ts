@@ -18,6 +18,9 @@ export type ImportStudentsCsvResult = {
     row: number;
     studentId: string;
     fullName: string;
+    rfid: string | null;
+    yearLevel: number | null;
+    yearLevelLabel: string | null;
     departments: string;
     majors: string;
   }>;
@@ -26,6 +29,9 @@ export type ImportStudentsCsvResult = {
 
 type CsvRow = {
   studentId: string;
+  rfid: string | null;
+  fullName: string | null;
+  yearLevel: number | null;
   firstName: string;
   middleName: string;
   lastName: string;
@@ -34,9 +40,9 @@ type CsvRow = {
   courseCode: string;
   courseName: string;
   major: string | null;
-  yearLevel: number;
   departmentName: string;
   departmentCode: string;
+  hasEnrollmentFields: boolean;
 };
 
 const DEPARTMENT_CODE_BY_NAME: Record<string, string> = {
@@ -61,6 +67,13 @@ const YEAR_LEVEL_BY_LABEL: Record<string, number> = {
   "second year": 2,
   "third year": 3,
   "fourth year": 4,
+};
+
+const YEAR_LEVEL_LABEL_BY_NUMBER: Record<number, string> = {
+  1: "First Year",
+  2: "Second Year",
+  3: "Third Year",
+  4: "Fourth Year",
 };
 
 function parseCsvLine(line: string): string[] {
@@ -93,13 +106,45 @@ function parseCsvLine(line: string): string[] {
 }
 
 function normalizeHeaderName(name: string): string {
-  return name.trim().toLowerCase().replace(/\s+/g, " ");
+  return name.trim().toLowerCase().replace(/_/g, " ").replace(/\s+/g, " ");
 }
 
 function resolveStudentIdHeader(indexByHeader: Map<string, number>): string | null {
   if (indexByHeader.has("id number")) return "id number";
   if (indexByHeader.has("student id")) return "student id";
   return null;
+}
+
+function resolveFullNameHeader(indexByHeader: Map<string, number>): string | null {
+  if (indexByHeader.has("full name")) return "full name";
+  return null;
+}
+
+function resolveLevelHeader(indexByHeader: Map<string, number>): string | null {
+  if (indexByHeader.has("level")) return "level";
+  if (indexByHeader.has("year")) return "year";
+  return null;
+}
+
+function isRowEmpty(values: string[]): boolean {
+  return values.every((value) => !String(value || "").trim());
+}
+
+function resolvePositionalPick(
+  rawValues: string[],
+  indexByHeader: Map<string, number>,
+  headerName: string,
+  position: number,
+): string {
+  if (indexByHeader.has(headerName)) {
+    return rawValues[indexByHeader.get(headerName) ?? -1]?.trim() ?? "";
+  }
+  return rawValues[position]?.trim() ?? "";
+}
+
+function parseYearLevel(raw: string): number | null {
+  const normalized = raw.trim().toLowerCase();
+  return YEAR_LEVEL_BY_LABEL[normalized] ?? null;
 }
 
 function deriveCourseCode(courseRaw: string): string {
@@ -153,6 +198,86 @@ function normalizeSemester(value: string): string {
   return "2nd sem";
 }
 
+function buildDisplayName(row: CsvRow): string {
+  if (row.fullName?.trim()) return row.fullName.trim();
+  const fromParts = [row.firstName, row.middleName, row.lastName]
+    .map((value) => String(value || "").trim())
+    .filter(Boolean)
+    .join(" ");
+  return fromParts || row.studentId;
+}
+
+function parseFlexibleRow(
+  rawValues: string[],
+  indexByHeader: Map<string, number>,
+  rowNumber: number,
+  usePositional: boolean,
+): CsvRow | null {
+  if (isRowEmpty(rawValues)) return null;
+
+  const pick = (name: string): string => rawValues[indexByHeader.get(name) ?? -1]?.trim() ?? "";
+  const studentIdHeader = resolveStudentIdHeader(indexByHeader);
+  const levelHeader = resolveLevelHeader(indexByHeader);
+
+  const studentId = usePositional
+    ? resolvePositionalPick(rawValues, indexByHeader, "id number", 0)
+    : studentIdHeader
+      ? pick(studentIdHeader)
+      : pick("id number") || pick("student id");
+  const rfidRaw = usePositional
+    ? resolvePositionalPick(rawValues, indexByHeader, "rfid", 1)
+    : pick("rfid");
+  const fullNameRaw = usePositional
+    ? resolvePositionalPick(rawValues, indexByHeader, "full name", 2)
+    : pick("full name");
+  const levelRaw = usePositional
+    ? resolvePositionalPick(rawValues, indexByHeader, "level", 3)
+    : levelHeader
+      ? pick(levelHeader)
+      : pick("level") || pick("year");
+  const firstName = pick("first name");
+  const middleName = pick("middle name");
+  const lastName = pick("last name");
+  const schoolYear = pick("school year");
+  const semesterRaw = pick("semester");
+  const courseRaw = pick("course");
+  const majorRaw = pick("major");
+  const departmentNameRaw = pick("department");
+  const departmentName = departmentNameRaw ? normalizeDepartmentName(departmentNameRaw) : "";
+
+  const resolvedStudentId = studentId || (rfidRaw ? `RFID-${rfidRaw}` : `IMPORT-${rowNumber}`);
+  const resolvedFullName =
+    fullNameRaw ||
+    [firstName, middleName, lastName]
+      .map((value) => String(value || "").trim())
+      .filter(Boolean)
+      .join(" ") ||
+    null;
+
+  const yearLevel = levelRaw ? parseYearLevel(levelRaw) : null;
+  const courseCode = courseRaw ? deriveCourseCode(courseRaw) : "";
+  const major = majorRaw ? majorRaw : null;
+  const hasEnrollmentFields = Boolean(departmentName && courseRaw && schoolYear && courseCode);
+
+  return {
+    studentId: resolvedStudentId,
+    rfid: rfidRaw ? rfidRaw : null,
+    fullName: resolvedFullName,
+    yearLevel,
+    firstName,
+    middleName,
+    lastName,
+    schoolYear,
+    semester: semesterRaw ? normalizeSemester(semesterRaw) : "2nd sem",
+    courseCode,
+    courseName: courseCode ? deriveCourseName(courseCode, major) : "",
+    major,
+    departmentName,
+    departmentCode: departmentName ? deriveDepartmentCode(departmentName) : "",
+    hasEnrollmentFields,
+  };
+}
+
 function parseRows(csvText: string): { rows: CsvRow[]; errors: Array<{ row: number; message: string }> } {
   const lines = csvText
     .split(/\r?\n/)
@@ -166,77 +291,17 @@ function parseRows(csvText: string): { rows: CsvRow[]; errors: Array<{ row: numb
   const headerValues = parseCsvLine(lines[0]).map(normalizeHeaderName);
   const indexByHeader = new Map<string, number>();
   headerValues.forEach((h, idx) => indexByHeader.set(h, idx));
-  const studentIdHeader = resolveStudentIdHeader(indexByHeader);
 
-  const requiredHeaders = [
-    "first name",
-    "last name",
-    "school year",
-    "course",
-    "year",
-    "department",
-  ];
-  if (!studentIdHeader) {
-    requiredHeaders.unshift("id number");
-  }
-
-  const missing = requiredHeaders.filter((header) => !indexByHeader.has(header));
-  if (missing.length > 0) {
-    return { rows: [], errors: [{ row: 1, message: `Missing required headers: ${missing.join(", ")}` }] };
-  }
+  const usePositional = !resolveStudentIdHeader(indexByHeader) && headerValues.length <= 4;
 
   const rows: CsvRow[] = [];
   const errors: Array<{ row: number; message: string }> = [];
 
   for (let i = 1; i < lines.length; i += 1) {
     const rawValues = parseCsvLine(lines[i]);
-    const pick = (name: string): string => rawValues[indexByHeader.get(name) ?? -1]?.trim() ?? "";
     const rowNumber = i + 1;
-
-    const studentId = studentIdHeader ? pick(studentIdHeader) : "";
-    const firstName = pick("first name");
-    const middleName = pick("middle name");
-    const lastName = pick("last name");
-    const schoolYear = pick("school year");
-    const semesterRaw = pick("semester");
-    const courseRaw = pick("course");
-    const majorRaw = pick("major");
-    const yearRaw = pick("year").toLowerCase();
-    const departmentNameRaw = pick("department");
-    const departmentName = normalizeDepartmentName(departmentNameRaw);
-
-    if (!studentId || !firstName || !lastName || !departmentName || !courseRaw || !schoolYear) {
-      errors.push({ row: rowNumber, message: "Missing required value(s)." });
-      continue;
-    }
-
-    const yearLevel = YEAR_LEVEL_BY_LABEL[yearRaw];
-    if (!yearLevel) {
-      errors.push({ row: rowNumber, message: `Unsupported year level: ${yearRaw || "(empty)"}` });
-      continue;
-    }
-
-    const courseCode = deriveCourseCode(courseRaw);
-    if (!courseCode) {
-      errors.push({ row: rowNumber, message: "Could not derive course code." });
-      continue;
-    }
-
-    const major = majorRaw ? majorRaw : null;
-    rows.push({
-      studentId,
-      firstName,
-      middleName,
-      lastName,
-      schoolYear,
-      semester: normalizeSemester(semesterRaw),
-      courseCode,
-      courseName: deriveCourseName(courseCode, major),
-      major,
-      yearLevel,
-      departmentName,
-      departmentCode: deriveDepartmentCode(departmentName),
-    });
+    const parsed = parseFlexibleRow(rawValues, indexByHeader, rowNumber, usePositional);
+    if (parsed) rows.push(parsed);
   }
 
   return { rows, errors };
@@ -274,31 +339,122 @@ async function getOrCreateProgram(
   return { id: Number(created.insertId), inserted: true };
 }
 
-async function getOrCreateStudent(connection: PoolConnection, row: CsvRow): Promise<{ id: number; inserted: boolean }> {
+async function upsertStudent(
+  connection: PoolConnection,
+  row: CsvRow,
+): Promise<{ id: number; inserted: boolean }> {
   const [existingByStudentId] = await connection.execute<RowDataPacket[]>(
     "SELECT id FROM students WHERE student_id = ? LIMIT 1",
     [row.studentId],
   );
-  if (existingByStudentId.length > 0) return { id: Number(existingByStudentId[0].id), inserted: false };
 
-  const [created] = await connection.execute<ResultSetHeader>(
-    "INSERT INTO students (student_id, first_name, middle_name, last_name) VALUES (?, ?, ?, ?)",
-    [row.studentId, row.firstName, row.middleName || null, row.lastName],
-  );
-  return { id: Number(created.insertId), inserted: true };
+  const applyUpdate = async (studentPk: number): Promise<void> => {
+    await connection.execute(
+      `UPDATE students SET
+        rfid = COALESCE(?, rfid),
+        full_name = COALESCE(?, full_name),
+        year_level = COALESCE(?, year_level),
+        first_name = COALESCE(?, first_name),
+        middle_name = COALESCE(?, middle_name),
+        last_name = COALESCE(?, last_name)
+      WHERE id = ?`,
+      [
+        row.rfid,
+        row.fullName,
+        row.yearLevel,
+        row.firstName || null,
+        row.middleName || null,
+        row.lastName || null,
+        studentPk,
+      ],
+    );
+  };
+
+  if (existingByStudentId.length > 0) {
+    const studentPk = Number(existingByStudentId[0].id);
+    try {
+      await applyUpdate(studentPk);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "";
+      if (!message.toLowerCase().includes("rfid")) throw error;
+      await connection.execute(
+        `UPDATE students SET
+          full_name = COALESCE(?, full_name),
+          year_level = COALESCE(?, year_level),
+          first_name = COALESCE(?, first_name),
+          middle_name = COALESCE(?, middle_name),
+          last_name = COALESCE(?, last_name)
+        WHERE id = ?`,
+        [
+          row.fullName,
+          row.yearLevel,
+          row.firstName || null,
+          row.middleName || null,
+          row.lastName || null,
+          studentPk,
+        ],
+      );
+    }
+    return { id: studentPk, inserted: false };
+  }
+
+  try {
+    const [created] = await connection.execute<ResultSetHeader>(
+      `INSERT INTO students (
+        student_id, rfid, full_name, year_level, first_name, middle_name, last_name
+      ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      [
+        row.studentId,
+        row.rfid,
+        row.fullName,
+        row.yearLevel,
+        row.firstName || null,
+        row.middleName || null,
+        row.lastName || null,
+      ],
+    );
+    return { id: Number(created.insertId), inserted: true };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "";
+    if (!message.toLowerCase().includes("rfid") || !row.rfid) throw error;
+
+    const [created] = await connection.execute<ResultSetHeader>(
+      `INSERT INTO students (
+        student_id, rfid, full_name, year_level, first_name, middle_name, last_name
+      ) VALUES (?, NULL, ?, ?, ?, ?, ?)`,
+      [
+        row.studentId,
+        row.fullName,
+        row.yearLevel,
+        row.firstName || null,
+        row.middleName || null,
+        row.lastName || null,
+      ],
+    );
+    return { id: Number(created.insertId), inserted: true };
+  }
 }
 
-async function createEnrollmentIfMissing(
+async function upsertEnrollment(
   connection: PoolConnection,
   row: CsvRow,
   studentId: number,
   programId: number,
-): Promise<"inserted" | "exists"> {
+): Promise<"inserted" | "updated"> {
   const [existingKey] = await connection.execute<RowDataPacket[]>(
     "SELECT id FROM enrollments WHERE student_id = ? AND program_id = ? AND school_year = ? AND semester = ? LIMIT 1",
     [studentId, programId, row.schoolYear, row.semester],
   );
-  if (existingKey.length > 0) return "exists";
+
+  if (existingKey.length > 0) {
+    if (row.yearLevel != null) {
+      await connection.execute("UPDATE enrollments SET year_level = ? WHERE id = ?", [
+        row.yearLevel,
+        Number(existingKey[0].id),
+      ]);
+    }
+    return "updated";
+  }
 
   await connection.execute(
     "INSERT INTO enrollments (student_id, program_id, school_year, semester, year_level) VALUES (?, ?, ?, ?, ?)",
@@ -346,6 +502,9 @@ export async function importStudentsCsv(fileBuffer: Buffer): Promise<ImportStude
     row: number;
     studentId: string;
     fullName: string;
+    rfid: string | null;
+    yearLevel: number | null;
+    yearLevelLabel: string | null;
     departments: string;
     majors: string;
   }> = [];
@@ -368,40 +527,34 @@ export async function importStudentsCsv(fileBuffer: Buffer): Promise<ImportStude
       const row = rows[index];
       const lineNumber = index + 2;
       try {
-        const dept = await getOrCreateDepartment(connection, row);
-        if (dept.inserted) inserted.departments += 1;
-
-        const program = await getOrCreateProgram(connection, row, dept.id);
-        if (program.inserted) inserted.programs += 1;
-
-        const student = await getOrCreateStudent(connection, row);
+        const student = await upsertStudent(connection, row);
         if (student.inserted) inserted.students += 1;
-        if (!student.inserted) {
+        else {
           const summary = await getStudentDepartmentMajorSummary(connection, student.id);
-          const fullName = [row.firstName, row.middleName, row.lastName]
-            .map((value) => String(value || "").trim())
-            .filter(Boolean)
-            .join(" ");
           existingStudents.push({
             row: lineNumber,
             studentId: row.studentId,
-            fullName,
+            fullName: buildDisplayName(row),
+            rfid: row.rfid,
+            yearLevel: row.yearLevel,
+            yearLevelLabel: row.yearLevel != null ? YEAR_LEVEL_LABEL_BY_NUMBER[row.yearLevel] ?? null : null,
             departments: summary.departments,
             majors: summary.majors,
           });
         }
 
-        const enrollmentState = await createEnrollmentIfMissing(connection, row, student.id, program.id);
-        if (enrollmentState === "inserted") {
-          inserted.enrollments += 1;
-          importedRows += 1;
-        } else {
-          skippedRows += 1;
-          skipped.push({
-            row: lineNumber,
-            reason: "Enrollment already exists for this student/program/school year/semester.",
-          });
+        if (row.hasEnrollmentFields) {
+          const dept = await getOrCreateDepartment(connection, row);
+          if (dept.inserted) inserted.departments += 1;
+
+          const program = await getOrCreateProgram(connection, row, dept.id);
+          if (program.inserted) inserted.programs += 1;
+
+          const enrollmentState = await upsertEnrollment(connection, row, student.id, program.id);
+          if (enrollmentState === "inserted") inserted.enrollments += 1;
         }
+
+        importedRows += 1;
       } catch (rowError) {
         skippedRows += 1;
         const message = rowError instanceof Error ? rowError.message : "Unknown row processing error.";

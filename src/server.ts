@@ -2,12 +2,14 @@ import app from "./app";
 import { env } from "./config/env";
 import { testDatabaseConnection } from "./config/db";
 import { createTables } from "./models/index";
-import { registerEventStatusCron } from "./cron/event.status.updater"; 
+import { registerEventStatusCron } from "./cron/event.status.updater";
+import { ensureDefaultAdmin } from "./seed/ensureDefaultAdmin";
 
 async function startServer(): Promise<void> {
   try {
     await testDatabaseConnection();
     await createTables();
+    await ensureDefaultAdmin();
     console.log("MySQL connected successfully");
 
     registerEventStatusCron();

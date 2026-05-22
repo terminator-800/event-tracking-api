@@ -30,9 +30,13 @@ npm start
 - `GET /health`
 
 
-## 5) Seed Admin
+## 5) Admin user
+
+On `npm run dev` or `npm start`, the server creates the first admin automatically when none exists, using `ADMIN_USERNAME` and `ADMIN_PASSWORD` from `.env.development`.
+
+Optional manual seed (same logic):
 
 ```bash
 npm run seed:admin
-
+```
 

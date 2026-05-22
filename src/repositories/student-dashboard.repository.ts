@@ -1,5 +1,6 @@
 import { RowDataPacket } from "mysql2";
 import { pool } from "../config/db";
+import { SQL_STUDENT_FULL_NAME, SQL_STUDENT_YEAR_LEVEL } from "../utils/studentDisplaySql";
 
 export interface StudentListRow extends RowDataPacket {
   student_pk: number;
@@ -32,11 +33,11 @@ export async function findStudentsWithAttendanceStats(
     SELECT
       s.id AS student_pk,
       s.student_id AS student_id,
-      TRIM(CONCAT_WS(' ', s.first_name, NULLIF(TRIM(s.middle_name), ''), s.last_name)) AS full_name,
+      ${SQL_STUDENT_FULL_NAME} AS full_name,
       p.course_code AS course_code,
       p.major AS major,
       p.department_id AS department_id,
-      en.year_level AS year_level,
+      ${SQL_STUDENT_YEAR_LEVEL} AS year_level,
       COUNT(DISTINCT CASE
         WHEN ev.id IS NOT NULL
          AND (
@@ -50,7 +51,7 @@ export async function findStudentsWithAttendanceStats(
               WHERE ea1.event_id = ev.id
                 AND (
                   ea1.year_level IS NULL
-                  OR CAST(ea1.year_level AS UNSIGNED) = CAST(en.year_level AS UNSIGNED)
+                  OR CAST(ea1.year_level AS UNSIGNED) = CAST(${SQL_STUDENT_YEAR_LEVEL} AS UNSIGNED)
                   OR EXISTS (
                     SELECT 1 FROM attendance ay1
                     WHERE ay1.event_id = ev.id AND ay1.student_id = s.id
@@ -69,7 +70,7 @@ export async function findStudentsWithAttendanceStats(
               AND (ea2.program_id IS NULL OR ea2.program_id = en.program_id)
               AND (
                 ea2.year_level IS NULL
-                OR CAST(ea2.year_level AS UNSIGNED) = CAST(en.year_level AS UNSIGNED)
+                OR CAST(ea2.year_level AS UNSIGNED) = CAST(${SQL_STUDENT_YEAR_LEVEL} AS UNSIGNED)
                 OR EXISTS (
                   SELECT 1 FROM attendance ay2
                   WHERE ay2.event_id = ev.id AND ay2.student_id = s.id
@@ -92,7 +93,7 @@ export async function findStudentsWithAttendanceStats(
               AND (ea_m.department_id IS NULL OR ea_m.department_id = p.department_id)
               AND (
                 ea_m.year_level IS NULL
-                OR CAST(ea_m.year_level AS UNSIGNED) = CAST(en.year_level AS UNSIGNED)
+                OR CAST(ea_m.year_level AS UNSIGNED) = CAST(${SQL_STUDENT_YEAR_LEVEL} AS UNSIGNED)
                 OR EXISTS (
                   SELECT 1 FROM attendance ay3
                   WHERE ay3.event_id = ev.id AND ay3.student_id = s.id
@@ -119,7 +120,7 @@ export async function findStudentsWithAttendanceStats(
               WHERE ea1.event_id = ev.id
                 AND (
                   ea1.year_level IS NULL
-                  OR CAST(ea1.year_level AS UNSIGNED) = CAST(en.year_level AS UNSIGNED)
+                  OR CAST(ea1.year_level AS UNSIGNED) = CAST(${SQL_STUDENT_YEAR_LEVEL} AS UNSIGNED)
                   OR EXISTS (
                     SELECT 1 FROM attendance ay1b
                     WHERE ay1b.event_id = ev.id AND ay1b.student_id = s.id
@@ -138,7 +139,7 @@ export async function findStudentsWithAttendanceStats(
               AND (ea2.program_id IS NULL OR ea2.program_id = en.program_id)
               AND (
                 ea2.year_level IS NULL
-                OR CAST(ea2.year_level AS UNSIGNED) = CAST(en.year_level AS UNSIGNED)
+                OR CAST(ea2.year_level AS UNSIGNED) = CAST(${SQL_STUDENT_YEAR_LEVEL} AS UNSIGNED)
                 OR EXISTS (
                   SELECT 1 FROM attendance ay2b
                   WHERE ay2b.event_id = ev.id AND ay2b.student_id = s.id
@@ -161,7 +162,7 @@ export async function findStudentsWithAttendanceStats(
               AND (ea_mb.department_id IS NULL OR ea_mb.department_id = p.department_id)
               AND (
                 ea_mb.year_level IS NULL
-                OR CAST(ea_mb.year_level AS UNSIGNED) = CAST(en.year_level AS UNSIGNED)
+                OR CAST(ea_mb.year_level AS UNSIGNED) = CAST(${SQL_STUDENT_YEAR_LEVEL} AS UNSIGNED)
                 OR EXISTS (
                   SELECT 1 FROM attendance ay3b
                   WHERE ay3b.event_id = ev.id AND ay3b.student_id = s.id
@@ -178,15 +179,15 @@ export async function findStudentsWithAttendanceStats(
         THEN ev.id
       END) AS events_attended
     FROM students s
-    INNER JOIN enrollments en ON en.id = (
+    LEFT JOIN enrollments en ON en.id = (
       SELECT e2.id FROM enrollments e2 WHERE e2.student_id = s.id ORDER BY e2.id DESC LIMIT 1
     )
-    INNER JOIN programs p ON p.id = en.program_id
+    LEFT JOIN programs p ON p.id = en.program_id
     LEFT JOIN events ev ON ev.status = 'Completed'
       ${eventCreatorClause}
     LEFT JOIN attendance att ON att.event_id = ev.id AND att.student_id = s.id
     WHERE ${deptClause}
-    GROUP BY s.id, s.student_id, s.first_name, s.middle_name, s.last_name, p.course_code, p.major, p.department_id, en.id, en.year_level
+    GROUP BY s.id, s.student_id, s.full_name, s.first_name, s.middle_name, s.last_name, s.year_level, p.course_code, p.major, p.department_id, en.id, en.year_level
     ORDER BY full_name ASC
     `,
     params.length ? params : undefined,
@@ -336,25 +337,35 @@ export async function findStudentEnrollmentContext(studentPk: number): Promise<{
   year_level: number;
   course_code: string;
   major: string | null;
+  full_name: string;
 } | null> {
   const [rows] = await pool.execute<RowDataPacket[]>(
     `
-    SELECT en.program_id, en.year_level, p.course_code, p.major
-    FROM enrollments en
-    INNER JOIN programs p ON p.id = en.program_id
-    WHERE en.student_id = ?
-    ORDER BY en.id DESC
+    SELECT
+      en.program_id,
+      ${SQL_STUDENT_YEAR_LEVEL} AS year_level,
+      p.course_code,
+      p.major,
+      ${SQL_STUDENT_FULL_NAME} AS full_name
+    FROM students s
+    LEFT JOIN enrollments en ON en.id = (
+      SELECT e2.id FROM enrollments e2 WHERE e2.student_id = s.id ORDER BY e2.id DESC LIMIT 1
+    )
+    LEFT JOIN programs p ON p.id = en.program_id
+    WHERE s.id = ?
     LIMIT 1
     `,
     [studentPk],
   );
   const r = rows[0];
   if (!r) return null;
+  const yearLevel = Number(r.year_level);
   return {
-    program_id: Number(r.program_id),
-    year_level: Number(r.year_level),
-    course_code: String(r.course_code),
+    program_id: r.program_id != null ? Number(r.program_id) : 0,
+    year_level: Number.isFinite(yearLevel) ? yearLevel : 0,
+    course_code: r.course_code != null ? String(r.course_code) : "",
     major: r.major == null ? null : String(r.major),
+    full_name: String(r.full_name || "").trim(),
   };
 }
 
