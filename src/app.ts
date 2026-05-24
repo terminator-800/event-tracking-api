@@ -6,11 +6,12 @@ import userRoutes from "./routes/user.routes";
 import studentDashboardRoutes from "./routes/student-dashboard.routes";
 import attendancePageRoutes from "./routes/attendance-page.routes";
 import paymentRoutes from "./routes/payment.routes";
+import { env } from "./config/env";
 
 const app = express();
 
 app.use(cors({
-  origin: "http://localhost:5173",
+  origin: env.csg_client,
   credentials: true,
 }));
 
