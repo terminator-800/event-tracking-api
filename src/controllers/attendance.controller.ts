@@ -62,6 +62,16 @@ private async findStudentByRfid(rfid: string) {
   return (rows as any[])[0] ?? null;
 }
 
+private async findStudentByIdentifier(identifier: string) {
+  const value = String(identifier ?? "").trim();
+  if (!value) return null;
+  const [rows] = await pool.execute(
+    `SELECT id FROM students WHERE student_id = ? OR rfid = ? LIMIT 1`,
+    [value, value],
+  );
+  return (rows as any[])[0] ?? null;
+}
+
 private async findOngoingEvent(currentDate: string) {
   const [rows] = await pool.execute(
     `SELECT id, duration, fine_amount,
@@ -260,6 +270,7 @@ private async isStudentInEventAudience(studentId: number, eventId: number, isAll
 
 public recordAttendance = async (req: Request, res: Response): Promise<void> => {
   const {
+    identifier: rawIdentifier,
     studentId: rawStudentId,
     rfid: rawRfid,
     simulatedTapTime,
@@ -267,10 +278,12 @@ public recordAttendance = async (req: Request, res: Response): Promise<void> => 
     attendanceKind,
     eventId: rawEventId,
   } = req.body;
+  const identifier = String(rawIdentifier ?? "").trim();
   const studentId = String(rawStudentId ?? "").trim();
   const rfid = String(rawRfid ?? "").trim();
   const requestedKind = this.parseAttendanceKind(attendanceKind);
   console.log("[AttendanceController] Received attendance record request:", {
+    identifier: identifier || undefined,
     studentId: studentId || undefined,
     rfid: rfid || undefined,
     simulatedTapTime,
@@ -279,13 +292,14 @@ public recordAttendance = async (req: Request, res: Response): Promise<void> => 
     eventId: rawEventId,
   });
 
-  if (!studentId && !rfid) {
-    res.status(400).json({ message: "studentId or rfid is required." });
+  if (studentId && rfid) {
+    res.status(400).json({ message: "Provide either studentId or rfid, not both." });
     return;
   }
 
-  if (studentId && rfid) {
-    res.status(400).json({ message: "Provide either studentId or rfid, not both." });
+  const lookupValue = identifier || studentId || rfid;
+  if (!lookupValue) {
+    res.status(400).json({ message: "identifier, studentId, or rfid is required." });
     return;
   }
 
@@ -295,9 +309,7 @@ public recordAttendance = async (req: Request, res: Response): Promise<void> => 
   });
 
   try {
-    const student = rfid
-      ? await this.findStudentByRfid(rfid)
-      : await this.findStudentByStudentId(studentId);
+    const student = await this.findStudentByIdentifier(lookupValue);
     if (!student) {
       res.status(404).json({ message: "Student not found." });
       return;
