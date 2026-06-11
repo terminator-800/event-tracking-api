@@ -189,17 +189,44 @@ async createEvent(req: Request, res: Response): Promise<void> {
       audiencesToInsert = [{ departmentId: resolvedDepartmentId, programId: null, yearLevel: parsedYearLevel }];
     } else {
       const parsedMajor = this.parseMajor(major);
-      const [deptRows]: any = await pool.execute(
-        `SELECT id, department_id FROM programs WHERE course_code = ? LIMIT 1`,
-        [courseKey],
-      );
+      const governorDeptId =
+        userDepartmentId != null && Number.isFinite(Number(userDepartmentId))
+          ? Number(userDepartmentId)
+          : null;
+      const isGovernor = userRole != null && GOVERNOR_ROLES.includes(userRole);
 
-      if (!deptRows.length) {
-        res.status(400).json({ message: "Program not found." });
-        return;
+      let programRow: { id: number; department_id: number } | null = null;
+
+      if (governorDeptId != null) {
+        const [scopedRows]: any = await pool.execute(
+          `SELECT id, department_id FROM programs
+           WHERE department_id = ? AND UPPER(TRIM(course_code)) = ?
+           LIMIT 1`,
+          [governorDeptId, courseKey],
+        );
+        if (scopedRows.length) programRow = scopedRows[0];
       }
 
-      const deptId = Number(deptRows[0].department_id);
+      if (!programRow) {
+        const [anyRows]: any = await pool.execute(
+          `SELECT id, department_id FROM programs WHERE UPPER(TRIM(course_code)) = ? LIMIT 1`,
+          [courseKey],
+        );
+        if (anyRows.length) programRow = anyRows[0];
+      }
+
+      if (!programRow) {
+        if (isGovernor && governorDeptId != null && parsedMajor === null) {
+          resolvedDepartmentId = governorDeptId;
+          audiencesToInsert = [
+            { departmentId: governorDeptId, programId: null, yearLevel: parsedYearLevel },
+          ];
+        } else {
+          res.status(400).json({ message: "Program not found." });
+          return;
+        }
+      } else {
+      const deptId = Number(programRow.department_id);
       resolvedDepartmentId = deptId;
 
       if (parsedMajor !== null) {
@@ -263,11 +290,11 @@ async createEvent(req: Request, res: Response): Promise<void> {
           yearLevel: parsedYearLevel,
         }));
       } else {
-        const [allPrograms]: any = await pool.execute(`SELECT id FROM programs WHERE course_code = ?`, [courseKey]);
-        const singleId = allPrograms.length === 1 ? allPrograms[0].id : null;
+        const programId = Number(programRow.id);
         audiencesToInsert = [
-          { departmentId: deptId, programId: singleId, yearLevel: parsedYearLevel },
+          { departmentId: deptId, programId, yearLevel: parsedYearLevel },
         ];
+      }
       }
     }
 

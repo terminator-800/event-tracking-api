@@ -240,6 +240,7 @@ export interface EventStudentRow extends RowDataPacket {
   full_name: string;
   course_code: string;
   major: string | null;
+  department_name: string | null;
   year_level: number | string | null;
   am_time_in: string | null;
   am_time_out: string | null;
@@ -271,6 +272,7 @@ export async function selectStudentsForEventDetail(
       ${SQL_STUDENT_FULL_NAME} AS full_name,
       p.course_code AS course_code,
       NULLIF(TRIM(p.major), '') AS major,
+      d.name AS department_name,
       ${SQL_STUDENT_YEAR_LEVEL} AS year_level,
       a.am_time_in,
       a.am_time_out,
@@ -280,6 +282,7 @@ export async function selectStudentsForEventDetail(
      FROM students s
      ${SQL_LATEST_ENROLLMENT_LEFT_JOIN}
      ${SQL_LATEST_PROGRAM_LEFT_JOIN}
+     LEFT JOIN departments d ON d.id = p.department_id
      INNER JOIN (${eligibleSql}) eligible ON eligible.student_id = s.id
      LEFT JOIN attendance a ON a.student_id = s.id AND a.event_id = ?`;
 

@@ -16,6 +16,7 @@ export interface DashboardStudentListItem {
   id: string;
   name: string;
   course: string;
+  department: string | null;
   yearLevel: number | null;
   attendanceRate: number;
   totalEvents: number;
@@ -170,6 +171,7 @@ export class StudentDashboardController {
           id: r.student_id,
           name: r.full_name,
           course: programToCourseFilterValue(r.course_code, r.major),
+          department: r.department_name?.trim() || null,
           yearLevel,
           attendanceRate: rate,
           totalEvents: total,
@@ -263,6 +265,7 @@ export class StudentDashboardController {
         id: studentId,
         name: displayName,
         course: programToCourseFilterValue(ctx.course_code, ctx.major),
+        department: ctx.department_name,
         yearLevel: yearLevelDetail,
         attendanceRate: rate,
         totalEvents: total,

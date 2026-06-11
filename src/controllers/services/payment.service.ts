@@ -103,14 +103,9 @@ export class PaymentService {
         SELECT s.id AS student_pk
         FROM students s
         WHERE s.student_id = ?
-          AND EXISTS (
-            SELECT 1 FROM fines f
-            INNER JOIN events e ON e.id = f.event_id AND e.status = 'Completed'
-            WHERE f.student_id = s.id AND e.created_by = ?
-          )
         LIMIT 1
         `,
-        [publicStudentId, creatorId],
+        [publicStudentId],
       );
       return rows[0] ? Number((rows[0] as { student_pk: number }).student_pk) : null;
     }
@@ -125,14 +120,9 @@ export class PaymentService {
       INNER JOIN programs p ON p.id = en.program_id
       WHERE s.student_id = ?
         AND p.department_id = ?
-        AND EXISTS (
-          SELECT 1 FROM fines f
-          INNER JOIN events e ON e.id = f.event_id AND e.status = 'Completed'
-          WHERE f.student_id = s.id AND e.created_by = ?
-        )
       LIMIT 1
       `,
-      [publicStudentId, Number(departmentId), creatorId],
+      [publicStudentId, Number(departmentId)],
     );
     if (!rows[0]) return null;
     const dep = Number((rows[0] as { department_id: number }).department_id);

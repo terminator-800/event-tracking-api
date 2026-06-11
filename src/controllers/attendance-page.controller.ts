@@ -172,6 +172,7 @@ export class AttendancePageController {
           course: s.course_code,
           major:
             s.major != null && String(s.major).trim() !== "" ? String(s.major).trim() : null,
+          department: s.department_name?.trim() || null,
           yearLevel: yearLevelParsed,
           status: ok ? "attended" : "absent",
           finePhp: fine,

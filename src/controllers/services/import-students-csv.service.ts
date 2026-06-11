@@ -43,7 +43,13 @@ type CsvRow = {
   departmentName: string;
   departmentCode: string;
   hasEnrollmentFields: boolean;
+  hasDepartmentOnly: boolean;
 };
+
+/** Placeholder enrollment when CSV has department but no course/school year. */
+const DEPARTMENT_ONLY_SCHOOL_YEAR = "IMPORT";
+const PLACEHOLDER_COURSE_CODE = "UNDECLARED";
+const PLACEHOLDER_COURSE_NAME = "Unspecified Program";
 
 const DEPARTMENT_CODE_BY_NAME: Record<string, string> = {
   "college of information technology": "CIT",
@@ -174,8 +180,16 @@ function deriveCourseName(courseCode: string, major: string | null): string {
   return courseCode;
 }
 
+function normalizeDepartmentLookupKey(departmentName: string): string {
+  return departmentName
+    .trim()
+    .toLowerCase()
+    .replace(/,\s+and\b/g, " and")
+    .replace(/\s+/g, " ");
+}
+
 function deriveDepartmentCode(departmentName: string): string {
-  const normalized = departmentName.trim().toLowerCase();
+  const normalized = normalizeDepartmentLookupKey(departmentName);
   if (DEPARTMENT_CODE_BY_NAME[normalized]) return DEPARTMENT_CODE_BY_NAME[normalized];
   const words = departmentName.replace(/[^A-Za-z\s]/g, " ").trim().split(/\s+/).filter(Boolean);
   if (words.length === 0) return "DEPT";
@@ -183,7 +197,7 @@ function deriveDepartmentCode(departmentName: string): string {
 }
 
 function normalizeDepartmentName(departmentName: string): string {
-  const normalized = departmentName.trim().toLowerCase();
+  const normalized = normalizeDepartmentLookupKey(departmentName);
   if (DEPARTMENT_CANONICAL_NAME_BY_NAME[normalized]) {
     return DEPARTMENT_CANONICAL_NAME_BY_NAME[normalized];
   }
@@ -258,6 +272,7 @@ function parseFlexibleRow(
   const courseCode = courseRaw ? deriveCourseCode(courseRaw) : "";
   const major = majorRaw ? majorRaw : null;
   const hasEnrollmentFields = Boolean(departmentName && courseRaw && schoolYear && courseCode);
+  const hasDepartmentOnly = Boolean(departmentName && !hasEnrollmentFields);
 
   return {
     studentId: resolvedStudentId,
@@ -275,6 +290,7 @@ function parseFlexibleRow(
     departmentName,
     departmentCode: departmentName ? deriveDepartmentCode(departmentName) : "",
     hasEnrollmentFields,
+    hasDepartmentOnly,
   };
 }
 
@@ -335,6 +351,23 @@ async function getOrCreateProgram(
   const [created] = await connection.execute<ResultSetHeader>(
     "INSERT INTO programs (course_code, course_name, major, department_id) VALUES (?, ?, ?, ?)",
     [row.courseCode, row.courseName, row.major, departmentId],
+  );
+  return { id: Number(created.insertId), inserted: true };
+}
+
+async function getOrCreatePlaceholderProgram(
+  connection: PoolConnection,
+  departmentId: number,
+): Promise<{ id: number; inserted: boolean }> {
+  const [existing] = await connection.execute<RowDataPacket[]>(
+    "SELECT id FROM programs WHERE course_code = ? AND course_name = ? AND department_id = ? LIMIT 1",
+    [PLACEHOLDER_COURSE_CODE, PLACEHOLDER_COURSE_NAME, departmentId],
+  );
+  if (existing.length > 0) return { id: Number(existing[0].id), inserted: false };
+
+  const [created] = await connection.execute<ResultSetHeader>(
+    "INSERT INTO programs (course_code, course_name, major, department_id) VALUES (?, ?, NULL, ?)",
+    [PLACEHOLDER_COURSE_CODE, PLACEHOLDER_COURSE_NAME, departmentId],
   );
   return { id: Number(created.insertId), inserted: true };
 }
@@ -440,10 +473,11 @@ async function upsertEnrollment(
   row: CsvRow,
   studentId: number,
   programId: number,
+  schoolYear: string,
 ): Promise<"inserted" | "updated"> {
   const [existingKey] = await connection.execute<RowDataPacket[]>(
     "SELECT id FROM enrollments WHERE student_id = ? AND program_id = ? AND school_year = ? AND semester = ? LIMIT 1",
-    [studentId, programId, row.schoolYear, row.semester],
+    [studentId, programId, schoolYear, row.semester],
   );
 
   if (existingKey.length > 0) {
@@ -458,9 +492,30 @@ async function upsertEnrollment(
 
   await connection.execute(
     "INSERT INTO enrollments (student_id, program_id, school_year, semester, year_level) VALUES (?, ?, ?, ?, ?)",
-    [studentId, programId, row.schoolYear, row.semester, row.yearLevel],
+    [studentId, programId, schoolYear, row.semester, row.yearLevel],
   );
   return "inserted";
+}
+
+async function linkStudentDepartment(
+  connection: PoolConnection,
+  row: CsvRow,
+  studentPk: number,
+  inserted: ImportCounts,
+): Promise<void> {
+  if (!row.hasEnrollmentFields && !row.hasDepartmentOnly) return;
+
+  const dept = await getOrCreateDepartment(connection, row);
+  if (dept.inserted) inserted.departments += 1;
+
+  const program = row.hasEnrollmentFields
+    ? await getOrCreateProgram(connection, row, dept.id)
+    : await getOrCreatePlaceholderProgram(connection, dept.id);
+  if (program.inserted) inserted.programs += 1;
+
+  const schoolYear = row.hasEnrollmentFields ? row.schoolYear : DEPARTMENT_ONLY_SCHOOL_YEAR;
+  const enrollmentState = await upsertEnrollment(connection, row, studentPk, program.id, schoolYear);
+  if (enrollmentState === "inserted") inserted.enrollments += 1;
 }
 
 async function getStudentDepartmentMajorSummary(
@@ -543,16 +598,7 @@ export async function importStudentsCsv(fileBuffer: Buffer): Promise<ImportStude
           });
         }
 
-        if (row.hasEnrollmentFields) {
-          const dept = await getOrCreateDepartment(connection, row);
-          if (dept.inserted) inserted.departments += 1;
-
-          const program = await getOrCreateProgram(connection, row, dept.id);
-          if (program.inserted) inserted.programs += 1;
-
-          const enrollmentState = await upsertEnrollment(connection, row, student.id, program.id);
-          if (enrollmentState === "inserted") inserted.enrollments += 1;
-        }
+        await linkStudentDepartment(connection, row, student.id, inserted);
 
         importedRows += 1;
       } catch (rowError) {

@@ -9,6 +9,7 @@ export interface StudentListRow extends RowDataPacket {
   course_code: string;
   major: string | null;
   department_id: number;
+  department_name: string | null;
   year_level: number | string | null;
   total_events: number;
   events_attended: number;
@@ -37,6 +38,7 @@ export async function findStudentsWithAttendanceStats(
       p.course_code AS course_code,
       p.major AS major,
       p.department_id AS department_id,
+      d.name AS department_name,
       ${SQL_STUDENT_YEAR_LEVEL} AS year_level,
       COUNT(DISTINCT CASE
         WHEN ev.id IS NOT NULL
@@ -183,11 +185,12 @@ export async function findStudentsWithAttendanceStats(
       SELECT e2.id FROM enrollments e2 WHERE e2.student_id = s.id ORDER BY e2.id DESC LIMIT 1
     )
     LEFT JOIN programs p ON p.id = en.program_id
+    LEFT JOIN departments d ON d.id = p.department_id
     LEFT JOIN events ev ON ev.status = 'Completed'
       ${eventCreatorClause}
     LEFT JOIN attendance att ON att.event_id = ev.id AND att.student_id = s.id
     WHERE ${deptClause}
-    GROUP BY s.id, s.student_id, s.full_name, s.first_name, s.middle_name, s.last_name, s.year_level, p.course_code, p.major, p.department_id, en.id, en.year_level
+    GROUP BY s.id, s.student_id, s.full_name, s.first_name, s.middle_name, s.last_name, s.year_level, p.course_code, p.major, p.department_id, d.name, en.id, en.year_level
     ORDER BY full_name ASC
     `,
     params.length ? params : undefined,
@@ -338,6 +341,7 @@ export async function findStudentEnrollmentContext(studentPk: number): Promise<{
   course_code: string;
   major: string | null;
   full_name: string;
+  department_name: string | null;
 } | null> {
   const [rows] = await pool.execute<RowDataPacket[]>(
     `
@@ -346,12 +350,14 @@ export async function findStudentEnrollmentContext(studentPk: number): Promise<{
       ${SQL_STUDENT_YEAR_LEVEL} AS year_level,
       p.course_code,
       p.major,
+      d.name AS department_name,
       ${SQL_STUDENT_FULL_NAME} AS full_name
     FROM students s
     LEFT JOIN enrollments en ON en.id = (
       SELECT e2.id FROM enrollments e2 WHERE e2.student_id = s.id ORDER BY e2.id DESC LIMIT 1
     )
     LEFT JOIN programs p ON p.id = en.program_id
+    LEFT JOIN departments d ON d.id = p.department_id
     WHERE s.id = ?
     LIMIT 1
     `,
@@ -366,6 +372,7 @@ export async function findStudentEnrollmentContext(studentPk: number): Promise<{
     course_code: r.course_code != null ? String(r.course_code) : "",
     major: r.major == null ? null : String(r.major),
     full_name: String(r.full_name || "").trim(),
+    department_name: r.department_name == null ? null : String(r.department_name).trim() || null,
   };
 }
 
