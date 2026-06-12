@@ -2,6 +2,8 @@ import { Request, Response } from "express";
 import { pool } from "../config/db";
 import { getManilaDateTime } from "../utils/manilaDateTime";
 import { SQL_STUDENT_YEAR_LEVEL } from "../utils/studentDisplaySql";
+import { verifyEventPassword as compareEventPassword } from "./services/event-password.service";
+import { signEventUnlockToken, verifyEventUnlockToken } from "../utils/eventUnlockToken";
 
 export class AttendanceController {
 
@@ -77,7 +79,7 @@ private async findOngoingEvent(currentDate: string) {
     `SELECT id, duration, fine_amount,
             am_time_in, am_grace_in, am_time_out,
             pm_time_in, pm_grace_in, pm_time_out,
-            is_all_departments
+            is_all_departments, attendance_password_hash
       FROM events
       WHERE status = 'Ongoing'
         AND date = ?
@@ -94,7 +96,7 @@ private async findOngoingEventById(eventId: number, currentDate: string) {
     `SELECT id, duration, fine_amount,
             am_time_in, am_grace_in, am_time_out,
             pm_time_in, pm_grace_in, pm_time_out,
-            is_all_departments
+            is_all_departments, attendance_password_hash
       FROM events
       WHERE id = ?
         AND status = 'Ongoing'
@@ -103,6 +105,39 @@ private async findOngoingEventById(eventId: number, currentDate: string) {
     [eventId, currentDate]
   );
   return (rows as any[])[0] ?? null;
+}
+
+private eventRequiresAttendancePassword(event: {
+  attendance_password_hash?: string | null;
+}): boolean {
+  return Boolean(event?.attendance_password_hash);
+}
+
+private isEventUnlockTokenValid(
+  eventId: number,
+  rawToken: unknown,
+): boolean {
+  const token = String(rawToken ?? "").trim();
+  if (!token) return false;
+  const payload = verifyEventUnlockToken(token);
+  return payload?.eventId === Number(eventId);
+}
+
+private assertEventAttendanceUnlocked(
+  event: { id: number; attendance_password_hash?: string | null },
+  rawToken: unknown,
+): { ok: true } | { ok: false; status: number; message: string } {
+  if (!this.eventRequiresAttendancePassword(event)) {
+    return { ok: true };
+  }
+  if (!this.isEventUnlockTokenValid(event.id, rawToken)) {
+    return {
+      ok: false,
+      status: 403,
+      message: "Event password is required. Unlock attendance on the homepage first.",
+    };
+  }
+  return { ok: true };
 }
 
 private async recordTimeIn(studentId: number, eventId: number, column: string, currentTime: string) {
@@ -268,6 +303,55 @@ private async isStudentInEventAudience(studentId: number, eventId: number, isAll
   return (rows as any[]).length > 0;
 }
 
+public verifyEventPassword = async (req: Request, res: Response): Promise<void> => {
+  const parsedEventId = Number(req.body?.eventId);
+  const password = String(req.body?.password ?? "").trim();
+
+  if (!Number.isFinite(parsedEventId)) {
+    res.status(400).json({ message: "eventId is required." });
+    return;
+  }
+  if (!password) {
+    res.status(400).json({ message: "password is required." });
+    return;
+  }
+
+  const { currentDate } = this.getManilaDateTime({
+    date: req.body?.simulatedDate,
+    time: req.body?.simulatedTapTime,
+  });
+
+  try {
+    const event = await this.findOngoingEventById(parsedEventId, currentDate);
+    if (!event) {
+      res.status(404).json({ message: "Event not found or not ongoing today." });
+      return;
+    }
+
+    if (!this.eventRequiresAttendancePassword(event)) {
+      res.status(200).json({
+        unlockToken: signEventUnlockToken(event.id),
+        requiresPassword: false,
+      });
+      return;
+    }
+
+    const isValid = await compareEventPassword(password, event.attendance_password_hash);
+    if (!isValid) {
+      res.status(401).json({ message: "Incorrect event password." });
+      return;
+    }
+
+    res.status(200).json({
+      unlockToken: signEventUnlockToken(event.id),
+      requiresPassword: true,
+    });
+  } catch (error) {
+    console.error("[AttendanceController.verifyEventPassword] Error:", error);
+    res.status(500).json({ message: "Internal server error." });
+  }
+};
+
 public recordAttendance = async (req: Request, res: Response): Promise<void> => {
   const {
     identifier: rawIdentifier,
@@ -277,6 +361,7 @@ public recordAttendance = async (req: Request, res: Response): Promise<void> => 
     simulatedDate,
     attendanceKind,
     eventId: rawEventId,
+    eventUnlockToken,
   } = req.body;
   const identifier = String(rawIdentifier ?? "").trim();
   const studentId = String(rawStudentId ?? "").trim();
@@ -338,6 +423,12 @@ public recordAttendance = async (req: Request, res: Response): Promise<void> => 
         res.status(404).json({ message: "No ongoing event found." });
         return;
       }
+    }
+
+    const unlockCheck = this.assertEventAttendanceUnlocked(event, eventUnlockToken);
+    if (!unlockCheck.ok) {
+      res.status(unlockCheck.status).json({ message: unlockCheck.message });
+      return;
     }
 
     const isAllowed = await this.isStudentInEventAudience(student.id, event.id, event.is_all_departments);

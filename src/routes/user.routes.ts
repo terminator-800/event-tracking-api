@@ -30,6 +30,9 @@ router.put("/update/events/:id", authMiddleware, roleMiddleware("admin","csg_pre
 router.delete("/delete/events/:id", authMiddleware, roleMiddleware("admin","csg_president","it_governor","cba_governor","ceas_governor", "coc_governor", "chm_governor"), (req, res) => eventController.deleteEvent(req, res));
 router.get("/get-events", authMiddleware, roleMiddleware("admin","csg_president","it_governor","cba_governor","ceas_governor", "coc_governor", "chm_governor"), (req, res) => eventController.getEvents(req, res));
 router.get("/get-current-event", optionalAuthMiddleware, (req, res) => eventController.getCurrentEvent(req, res));
+router.post("/attendance/verify-event-password", (req, res) =>
+  attendanceController.verifyEventPassword(req, res),
+);
 router.post("/attendance/time-in-out", attendanceController.recordAttendance);
 
 export default router;

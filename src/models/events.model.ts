@@ -22,6 +22,7 @@ export async function createEventsTable(): Promise<void> {
       status              ENUM('Upcoming','Ongoing','Completed','Cancelled') NOT NULL DEFAULT 'Upcoming',
       audience_notes      TEXT,
       fine_amount         DECIMAL(10,2) NOT NULL DEFAULT 0,
+      attendance_password_hash VARCHAR(255) NULL,
       created_by          INT NOT NULL,
       created_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
       updated_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,

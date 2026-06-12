@@ -2,6 +2,12 @@ import { Request, Response } from "express";
 import { pool } from "../config/db";
 import { ResultSetHeader } from "mysql2";
 import { Role } from "../types/express";
+import {
+  hashEventPassword,
+  MIN_EVENT_PASSWORD_LENGTH,
+  parseAttendancePasswordFromBody,
+} from "./services/event-password.service";
+import { sanitizeEventRow, sanitizeEventRows } from "../utils/eventResponse";
 
 /** Frontend sends this when CEAS governor picks "All Majors" — audience = every program in that department. */
 const CEAS_GOVERNOR_ALL_PROGRAMS_SENTINEL = "__CEAS_GOVERNOR_ALL_PROGRAMS__";
@@ -148,6 +154,15 @@ async createEvent(req: Request, res: Response): Promise<void> {
     res.status(400).json({ message: "Missing required fields." });
     return;
   }
+
+  const attendancePassword = parseAttendancePasswordFromBody(req.body);
+  if (attendancePassword.length < MIN_EVENT_PASSWORD_LENGTH) {
+    res.status(400).json({
+      message: `Event password is required and must be at least ${MIN_EVENT_PASSWORD_LENGTH} characters.`,
+    });
+    return;
+  }
+  const attendancePasswordHash = await hashEventPassword(attendancePassword);
 
   const isAllDepartments = course_code === "All Departments";
 
@@ -317,8 +332,8 @@ async createEvent(req: Request, res: Response): Promise<void> {
         am_time_in, am_grace_in, am_time_out, am_grace_out,
         pm_time_in, pm_grace_in, pm_time_out, pm_grace_out,
         is_mandatory, is_all_departments,
-        status, audience_notes, fine_amount, created_by
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        status, audience_notes, fine_amount, attendance_password_hash, created_by
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         name, date, venue, duration,
         amIn,  graceAmIn,  amOut, graceAmOut,
@@ -328,6 +343,7 @@ async createEvent(req: Request, res: Response): Promise<void> {
         status,
         audienceNotes || null,
         fineAmount ?? 0,
+        attendancePasswordHash,
         createdBy,
       ]
     );
@@ -677,7 +693,7 @@ try {
 
   // console.log("events:", events);
   console.log("Total events:", events.length);
-  res.status(200).json({ events });
+  res.status(200).json({ events: sanitizeEventRows(events) });
 
 } catch (error) {
   console.error("[getEvents] Error:", error);
@@ -721,7 +737,7 @@ async getCurrentEvent(req: Request, res: Response): Promise<void> {
         ORDER BY e.date ASC`,
         [userId]
       );
-      res.status(200).json({ events: rows });
+      res.status(200).json({ events: sanitizeEventRows(rows) });
       return;
     }
 
@@ -765,7 +781,7 @@ async getCurrentEvent(req: Request, res: Response): Promise<void> {
             : [departmentId, departmentId]
         );
 
-        res.status(200).json({ events: rows });
+        res.status(200).json({ events: sanitizeEventRows(rows) });
         return;
       }
 
@@ -832,8 +848,8 @@ async getCurrentEvent(req: Request, res: Response): Promise<void> {
         [...GOVERNOR_ROLES]
       );
       console.log("get current events:", rows.length);
-      
-      res.status(200).json({ events: rows });
+
+      res.status(200).json({ events: sanitizeEventRows(rows) });
 
   } catch (error) {
     console.error("[getCurrentEvent] Error:", error);
