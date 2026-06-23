@@ -6,7 +6,7 @@ import { buildEligibleStudentsQuery } from "../utils/studentEligibilitySql";
 let isCronRunInProgress = false;
 
 /** Hours after scheduled session end (`am_time_out` / `pm_time_out`) before `Ongoing` → `Completed`. */
-const COMPLETION_GRACE_HOURS = 3;
+const COMPLETION_GRACE_HOURS = 1;
 
 async function markOngoingEvents(currentDate: string, currentTime: string): Promise<number> {
   const [result] = await pool.execute(

@@ -7,6 +7,51 @@ const router = Router();
 const controller = new PaymentController();
 
 router.get(
+  "/payments/summary",
+  authMiddleware,
+  roleMiddleware(
+    "admin",
+    "csg_president",
+    "it_governor",
+    "cba_governor",
+    "ceas_governor",
+    "coc_governor",
+    "chm_governor",
+  ),
+  (req, res) => controller.summary(req, res),
+);
+
+router.get(
+  "/payments/transactions",
+  authMiddleware,
+  roleMiddleware(
+    "admin",
+    "csg_president",
+    "it_governor",
+    "cba_governor",
+    "ceas_governor",
+    "coc_governor",
+    "chm_governor",
+  ),
+  (req, res) => controller.transactions(req, res),
+);
+
+router.get(
+  "/payments/students/lookup",
+  authMiddleware,
+  roleMiddleware(
+    "admin",
+    "csg_president",
+    "it_governor",
+    "cba_governor",
+    "ceas_governor",
+    "coc_governor",
+    "chm_governor",
+  ),
+  (req, res) => controller.lookup(req, res),
+);
+
+router.get(
   "/payments/students",
   authMiddleware,
   roleMiddleware(

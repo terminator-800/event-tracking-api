@@ -7,6 +7,7 @@ import { createEventAudiencesTable } from './event_audiences.model';
 import { createEventsTable } from './events.model';
 import { createAttendanceTable } from './attendance.model'; 
 import { createFinesTable } from './fines.models';            
+import { createPaymentTransactionsTable } from "./payment_transactions.model";
 import { createPaymentsTable } from "./payments.model";
 import { createFineAdjustmentsTable } from "./fine_adjustments.model";
 
@@ -20,6 +21,7 @@ export async function createTables(): Promise<void> {
   await createEventAudiencesTable(); // depends on events, departments, programs
   await createAttendanceTable();     // depends on students, events  👈 add
   await createFinesTable();          // depends on students, events, attendance  👈 add
-  await createPaymentsTable();       // depends on students, fines, users
+  await createPaymentTransactionsTable(); // depends on students, users
+  await createPaymentsTable();       // depends on students, fines, users, payment_transactions
   await createFineAdjustmentsTable();// depends on fines, users
 }

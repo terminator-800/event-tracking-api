@@ -5,6 +5,73 @@ import { PaymentService } from "./services/payment.service";
 const paymentService = new PaymentService();
 
 export class PaymentController {
+  async summary(req: Request, res: Response): Promise<void> {
+    try {
+      const role = req.user?.role as Role | undefined;
+      const departmentId = req.user?.department_id ?? null;
+      const userId = req.user?.id;
+      if (!role || userId == null) {
+        res.status(401).json({ message: "Unauthorized" });
+        return;
+      }
+      const summary = await paymentService.getPaymentSummary(role, departmentId, userId);
+      res.status(200).json({ summary });
+    } catch (error) {
+      console.error("[PaymentController.summary]", error);
+      res.status(500).json({ message: "Internal server error." });
+    }
+  }
+
+  async transactions(req: Request, res: Response): Promise<void> {
+    try {
+      const role = req.user?.role as Role | undefined;
+      const departmentId = req.user?.department_id ?? null;
+      const userId = req.user?.id;
+      if (!role || userId == null) {
+        res.status(401).json({ message: "Unauthorized" });
+        return;
+      }
+      const data = await paymentService.listPaymentTransactions(role, departmentId, userId);
+      res.status(200).json(data);
+    } catch (error) {
+      console.error("[PaymentController.transactions]", error);
+      res.status(500).json({ message: "Internal server error." });
+    }
+  }
+
+  async lookup(req: Request, res: Response): Promise<void> {
+    try {
+      const role = req.user?.role as Role | undefined;
+      const departmentId = req.user?.department_id ?? null;
+      const userId = req.user?.id;
+      if (!role || userId == null) {
+        res.status(401).json({ message: "Unauthorized" });
+        return;
+      }
+
+      const identifier = String(req.query.identifier ?? "").trim();
+      if (!identifier) {
+        res.status(400).json({ message: "identifier is required (Student ID or RFID)." });
+        return;
+      }
+
+      const student = await paymentService.getPaymentStudentByIdentifier(
+        role,
+        departmentId,
+        userId,
+        identifier,
+      );
+      if (!student) {
+        res.status(404).json({ message: "Student not found or access denied." });
+        return;
+      }
+      res.status(200).json({ student });
+    } catch (error) {
+      console.error("[PaymentController.lookup]", error);
+      res.status(500).json({ message: "Internal server error." });
+    }
+  }
+
   async getOne(req: Request, res: Response): Promise<void> {
     try {
       const role = req.user?.role as Role | undefined;

@@ -6,6 +6,7 @@ export const DATA_RESET_CONFIRMATION_PHRASE = "RESET ALL DATA";
 export interface DataResetPreviewCounts {
   fineAdjustments: number;
   payments: number;
+  paymentTransactions: number;
   fines: number;
   attendance: number;
   eventAudiences: number;
@@ -50,6 +51,7 @@ export async function getDataResetPreview(): Promise<DataResetPreviewCounts> {
   return {
     fineAdjustments: await countTable(pool, "fine_adjustments"),
     payments: await countTable(pool, "payments"),
+    paymentTransactions: await countTable(pool, "payment_transactions"),
     fines: await countTable(pool, "fines"),
     attendance: await countTable(pool, "attendance"),
     eventAudiences: await countTable(pool, "event_audiences"),
@@ -78,6 +80,7 @@ export async function executeDataReset(): Promise<DataResetResult> {
 
     await conn.execute("DELETE FROM fine_adjustments");
     await conn.execute("DELETE FROM payments");
+    await conn.execute("DELETE FROM payment_transactions");
     await conn.execute("DELETE FROM fines");
     await conn.execute("DELETE FROM attendance");
     await conn.execute("DELETE FROM event_audiences");
