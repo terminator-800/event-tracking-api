@@ -116,8 +116,28 @@ async logout(_req: Request, res: Response): Promise<void> {
 }
 
 async me(req: Request, res: Response): Promise<void> {
-  const user = req.user;
-  res.status(200).json({ user });
+  try {
+    const userId = req.user?.id;
+    if (!userId) {
+      res.status(401).json({ message: "Unauthorized" });
+      return;
+    }
+
+    const [rows]: any = await pool.execute(
+      `SELECT id, username, full_name, role, department_id FROM users WHERE id = ? LIMIT 1`,
+      [userId],
+    );
+
+    if (!rows.length) {
+      res.status(404).json({ message: "User not found." });
+      return;
+    }
+
+    res.status(200).json({ user: rows[0] });
+  } catch (error) {
+    console.error("Error in me:", error);
+    res.status(500).json({ message: "Internal server error." });
+  }
 }
 
 async departmentMe(req: Request, res: Response): Promise<void> {

@@ -5,6 +5,7 @@ import { ResultSetHeader, RowDataPacket } from "mysql2/promise";
 
 interface RegisterPayload {
   department: string;
+  fullName: string;
   major: string;
   password: string;
   role: Role;
@@ -12,6 +13,7 @@ interface RegisterPayload {
 }
 
 interface UpdateUserPayload {
+  fullName?: string;
   username?: string;
   password?: string;
 }
@@ -97,6 +99,7 @@ async function resolveGovernorIds(department: string, major: string): Promise<Fa
 
 async function insertUser(
   username: string,
+  fullName: string,
   hashedPassword: string,
   role: Role,
   studentId: number | null,
@@ -104,16 +107,16 @@ async function insertUser(
   programId: number | null
 ): Promise<void> {
   await pool.execute(
-    `INSERT INTO users (username, password, role, student_id, department_id, program_id)
-     VALUES (?, ?, ?, ?, ?, ?)`,
-    [username, hashedPassword, role, studentId, departmentId, programId]
+    `INSERT INTO users (username, full_name, password, role, student_id, department_id, program_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    [username, fullName, hashedPassword, role, studentId, departmentId, programId]
   );
 }
 
 // ── Main Service ──────────────────────────────────────────────────────────────
 
 export async function createUser(payload: RegisterPayload): Promise<ServiceResult> {
-  const { department, major, password, role, username } = payload;
+  const { department, fullName, major, password, role, username } = payload;
   const csg_president = "csg_president";
   try {
 
@@ -138,7 +141,7 @@ export async function createUser(payload: RegisterPayload): Promise<ServiceResul
 
     const hashedPassword = await bcrypt.hash(password, 10);
 
-    await insertUser(username, hashedPassword, role, studentId, departmentId, programId);
+    await insertUser(username, fullName, hashedPassword, role, studentId, departmentId, programId);
 
     return { success: true, status: 201 };
 
@@ -153,6 +156,7 @@ export async function listUsers() {
     `SELECT 
       u.id,
       u.username,
+      u.full_name,
       u.role,
       u.student_id,
       u.department_id,
@@ -168,8 +172,8 @@ export async function listUsers() {
 }
 
 export async function updateUserById(userId: number, payload: UpdateUserPayload): Promise<ServiceResult> {
-  const { username, password } = payload;
-  if (!username && !password) {
+  const { fullName, username, password } = payload;
+  if (!fullName && !username && !password) {
     return { success: false, status: 400, message: "Nothing to update." };
   }
 
@@ -193,6 +197,11 @@ export async function updateUserById(userId: number, payload: UpdateUserPayload)
 
   const updates: string[] = [];
   const values: Array<string | number> = [];
+
+  if (fullName !== undefined) {
+    updates.push("full_name = ?");
+    values.push(fullName);
+  }
 
   if (username) {
     updates.push("username = ?");

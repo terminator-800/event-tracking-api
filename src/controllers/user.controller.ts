@@ -10,11 +10,18 @@ export class UserController {
   async createUser(req: Request, res: Response): Promise<void> {
     try {
 
-      const { department, major, password, role, username } = req.body;
+      const { department, fullName, major, password, role, username } = req.body;
 
-      if (!validateRequiredFields({ password, role, username }, res)) return;
+      if (!validateRequiredFields({ fullName, password, role, username }, res)) return;
 
-      const result = await createUser({ department, major, password, role, username });
+      const result = await createUser({
+        department,
+        fullName: String(fullName).trim(),
+        major,
+        password,
+        role,
+        username,
+      });
 
       if (!result.success) {
         res.status(result.status).json({ message: result.message });
@@ -47,8 +54,9 @@ export class UserController {
         res.status(400).json({ message: "Invalid user id." });
         return;
       }
-      const { username, password } = req.body ?? {};
+      const { fullName, username, password } = req.body ?? {};
       const result = await updateUserById(id, {
+        fullName: fullName !== undefined ? String(fullName).trim() : undefined,
         username: username ? String(username).trim() : undefined,
         password: password ? String(password) : undefined,
       });

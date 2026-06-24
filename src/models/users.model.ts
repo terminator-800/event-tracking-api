@@ -1,10 +1,17 @@
 import { pool } from "../config/db";
 
+/**
+ * Existing database (run manually in MySQL Workbench):
+ *
+ * ALTER TABLE users
+ *   ADD COLUMN full_name VARCHAR(255) NULL AFTER username;
+ */
 export async function createUsersTable(): Promise<void> {
   await pool.execute(`
     CREATE TABLE IF NOT EXISTS users (
       id INT AUTO_INCREMENT PRIMARY KEY,
       username VARCHAR(100) NOT NULL UNIQUE,
+      full_name VARCHAR(255) NULL,
       password VARCHAR(255) NOT NULL,
         role ENUM(
         'admin',

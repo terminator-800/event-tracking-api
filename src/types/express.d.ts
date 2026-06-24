@@ -14,6 +14,7 @@ declare global {
       user?: {
         id: number;
         username: string;
+        full_name?: string | null;
         role: Role;
         department_id?: number | null;
         department_name?: string | null;
