@@ -2,6 +2,11 @@ import { pool } from "../../config/db";
 import { Role } from "../../types/express";
 import bcrypt from "bcrypt";
 import { ResultSetHeader, RowDataPacket } from "mysql2/promise";
+import {
+  deriveDepartmentCode,
+  isDepartmentExcludedFromImport,
+  normalizeDepartmentLookupKey,
+} from "../../models/departments.model";
 
 interface RegisterPayload {
   department: string;
@@ -55,11 +60,32 @@ async function isUsernameTaken(username: string): Promise<boolean> {
 }
 
 async function findDepartmentId(department: string): Promise<number | null> {
-  const [rows]: any = await pool.execute(
-    `SELECT id FROM departments WHERE name = ? OR code = ?`,
-    [department, department]
+  const trimmed = department.trim();
+  if (!trimmed) return null;
+
+  const [exactRows]: any = await pool.execute(
+    `SELECT id FROM departments WHERE name = ? OR code = ? LIMIT 1`,
+    [trimmed, trimmed],
   );
-  return rows.length === 0 ? null : rows[0].id;
+  if (exactRows.length > 0) return Number(exactRows[0].id);
+
+  const normalized = normalizeDepartmentLookupKey(trimmed);
+  const [nameRows]: any = await pool.execute(
+    `SELECT id FROM departments WHERE LOWER(TRIM(name)) = ? LIMIT 1`,
+    [normalized],
+  );
+  if (nameRows.length > 0) return Number(nameRows[0].id);
+
+  const code = deriveDepartmentCode(trimmed);
+  if (code) {
+    const [codeRows]: any = await pool.execute(
+      `SELECT id FROM departments WHERE code = ? LIMIT 1`,
+      [code],
+    );
+    if (codeRows.length > 0) return Number(codeRows[0].id);
+  }
+
+  return null;
 }
 
 async function findProgramId(major: string, departmentId: number): Promise<number | null> {
@@ -149,6 +175,19 @@ export async function createUser(payload: RegisterPayload): Promise<ServiceResul
     console.error("createUser error:", error);
     return { success: false, status: 500, message: "Internal server error." };
   }
+}
+
+export async function listDepartments() {
+  const [rows] = await pool.execute<RowDataPacket[]>(
+    `SELECT id, name, code FROM departments ORDER BY name ASC`,
+  );
+  return rows
+    .map((row) => ({
+      id: Number(row.id),
+      name: String(row.name ?? "").trim(),
+      code: String(row.code ?? "").trim(),
+    }))
+    .filter((row) => row.name && !isDepartmentExcludedFromImport(row.name));
 }
 
 export async function listUsers() {

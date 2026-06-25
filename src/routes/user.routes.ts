@@ -15,6 +15,7 @@ const attendanceController = new AttendanceController();
 const dataResetController = new DataResetController();
 
 router.post("/create-account", authMiddleware, roleMiddleware('admin'), (req, res) => userController.createUser(req, res));
+router.get("/departments", authMiddleware, roleMiddleware("admin"), (req, res) => userController.listDepartments(req, res));
 router.get("/users", authMiddleware, roleMiddleware("admin"), (req, res) => userController.listUsers(req, res));
 router.put("/users/:id", authMiddleware, roleMiddleware("admin"), (req, res) => userController.updateUser(req, res));
 router.delete("/users/:id", authMiddleware, roleMiddleware("admin"), (req, res) => userController.deleteUser(req, res));

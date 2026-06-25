@@ -2,7 +2,7 @@
 
 import { Request, Response } from "express";
 import { validateRequiredFields } from '../utils/validate';
-import { createUser, deleteUserById, listUsers, updateUserById } from './services/user.service'
+import { createUser, deleteUserById, listDepartments, listUsers, updateUserById } from './services/user.service'
 import { importStudentsCsv } from "./services/import-students-csv.service";
 
 export class UserController {
@@ -33,6 +33,16 @@ export class UserController {
       });
     } catch (error) {
       console.error("Error creating user:", error);
+      res.status(500).json({ message: "Internal server error." });
+    }
+  }
+
+  async listDepartments(_req: Request, res: Response): Promise<void> {
+    try {
+      const departments = await listDepartments();
+      res.status(200).json({ departments });
+    } catch (error) {
+      console.error("Error listing departments:", error);
       res.status(500).json({ message: "Internal server error." });
     }
   }

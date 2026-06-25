@@ -5,6 +5,8 @@ import { SQL_LATEST_ENROLLMENT_LEFT_JOIN, SQL_LATEST_PROGRAM_LEFT_JOIN } from ".
 import { Role } from "../../types/express";
 import { clampMoney, computeFineStatus } from "../../utils/paymentStatus";
 
+const SQL_USER_ENCODED_BY_NAME = `COALESCE(NULLIF(TRIM(u.full_name), ''), u.username)`;
+
 type SessionKind = "whole" | "am" | "pm";
 
 function isPaymentAdminUnfiltered(role: Role): boolean {
@@ -545,7 +547,7 @@ export class PaymentService {
         p.course_code AS course_code,
         ${SQL_STUDENT_DEPARTMENT_NAME} AS department_name,
         ${SQL_STUDENT_YEAR_LEVEL} AS year_level,
-        u.username AS encoded_by
+        ${SQL_USER_ENCODED_BY_NAME} AS encoded_by
       FROM payment_transactions pt
       INNER JOIN students s ON s.id = pt.student_id
       ${SQL_LATEST_ENROLLMENT_LEFT_JOIN}
@@ -916,6 +918,13 @@ export class PaymentService {
         args.publicStudentId,
       );
 
+      const [encoderRows] = await pool.execute<RowDataPacket[]>(
+        `SELECT COALESCE(NULLIF(TRIM(full_name), ''), username) AS encoded_by
+         FROM users WHERE id = ? LIMIT 1`,
+        [args.encodedByUserId],
+      );
+      const encodedBy = encoderRows.length ? String(encoderRows[0].encoded_by ?? "") : "";
+
       return {
         ok: true as const,
         transactionCode,
@@ -927,6 +936,7 @@ export class PaymentService {
         paidAmount: totalsAfter.paidAmount,
         totalFine: totalsAfter.totalFine,
         waivedAmount: totalsAfter.waivedAmount,
+        encodedBy,
         student,
       };
     } catch (error) {
