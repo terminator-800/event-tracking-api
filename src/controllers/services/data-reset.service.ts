@@ -33,16 +33,18 @@ async function countTable(
   return Number(rows[0]?.total ?? 0);
 }
 
+const PRIVILEGED_USER_ROLES_SQL = "('admin', 'super_admin')";
+
 async function countNonAdminUsers(executor: typeof pool | PoolConnection): Promise<number> {
   const [rows] = await executor.execute<RowDataPacket[]>(
-    `SELECT COUNT(*) AS total FROM users WHERE role != 'admin'`,
+    `SELECT COUNT(*) AS total FROM users WHERE role NOT IN ${PRIVILEGED_USER_ROLES_SQL}`,
   );
   return Number(rows[0]?.total ?? 0);
 }
 
 async function countAdminUsers(executor: typeof pool | PoolConnection): Promise<number> {
   const [rows] = await executor.execute<RowDataPacket[]>(
-    `SELECT COUNT(*) AS total FROM users WHERE role = 'admin'`,
+    `SELECT COUNT(*) AS total FROM users WHERE role IN ${PRIVILEGED_USER_ROLES_SQL}`,
   );
   return Number(rows[0]?.total ?? 0);
 }
@@ -75,7 +77,7 @@ export async function executeDataReset(): Promise<DataResetResult> {
     await conn.execute(
       `UPDATE users
        SET student_id = NULL, department_id = NULL, program_id = NULL
-       WHERE role = 'admin'`,
+       WHERE role IN ${PRIVILEGED_USER_ROLES_SQL}`,
     );
 
     await conn.execute("DELETE FROM fine_adjustments");
@@ -87,7 +89,7 @@ export async function executeDataReset(): Promise<DataResetResult> {
     await conn.execute("DELETE FROM events");
 
     const [userDeleteResult] = await conn.execute<ResultSetHeader>(
-      `DELETE FROM users WHERE role != 'admin'`,
+      `DELETE FROM users WHERE role NOT IN ${PRIVILEGED_USER_ROLES_SQL}`,
     );
 
     await conn.execute("DELETE FROM enrollments");

@@ -11,6 +11,7 @@ import {
 } from "../repositories/student-dashboard.repository";
 import { programToCourseFilterValue } from "../utils/programCourseFilter";
 import { sqlTimeTo12Hour } from "../utils/sqlTime";
+import { hasInstitutionAdminAccess, INSTITUTION_OR_CSG_ROLES } from "../utils/roles";
 
 export interface DashboardStudentListItem {
   id: string;
@@ -144,9 +145,9 @@ export class StudentDashboardController {
       }
 
       // Admins see institution-wide stats; governors and CSG president only stats for events they created.
-      const isAdminFullAccess = role === "admin";
+      const isAdminFullAccess = hasInstitutionAdminAccess(role);
 
-      const adminStyleDepartmentBypass: Role[] = ["admin", "csg_president"];
+      const adminStyleDepartmentBypass: Role[] = [...INSTITUTION_OR_CSG_ROLES];
       if (!adminStyleDepartmentBypass.includes(role) && (departmentId == null || departmentId === undefined)) {
         res.status(200).json({ students: [] });
         return;
@@ -192,7 +193,7 @@ export class StudentDashboardController {
       const role = req.user?.role as Role | undefined;
       const userId = req.user?.id;
       const departmentId = req.user?.department_id ?? null;
-      const isAdminFullAccess = role === "admin";
+      const isAdminFullAccess = hasInstitutionAdminAccess(role);
 
       if (!role) {
         res.status(401).json({ message: "Unauthorized" });
@@ -224,7 +225,7 @@ export class StudentDashboardController {
         return;
       }
 
-      const adminStyleDepartmentBypass: Role[] = ["admin", "csg_president"];
+      const adminStyleDepartmentBypass: Role[] = [...INSTITUTION_OR_CSG_ROLES];
       if (!adminStyleDepartmentBypass.includes(role) && ctx.program_id > 0) {
         const [progRows] = await pool.execute<RowDataPacket[]>(
           `SELECT department_id FROM programs WHERE id = ? LIMIT 1`,

@@ -1,5 +1,6 @@
 // types/express.ts
 export type Role =
+  | "super_admin"
   | "admin"
   | "csg_president"
   | "it_governor"

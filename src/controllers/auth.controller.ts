@@ -1,6 +1,7 @@
 import { Request, Response } from "express";
 import { validateRequiredFields } from '../utils/validate'
 import { verifyUserCredentials, generateAuthToken, setAuthCookie, generateDepartmentToken } from './services/auth.service'
+import { getActiveAcademicPeriod } from "./services/academic-period.service";
 import { pool } from '../config/db';
 
 export class AuthController {
@@ -133,7 +134,12 @@ async me(req: Request, res: Response): Promise<void> {
       return;
     }
 
-    res.status(200).json({ user: rows[0] });
+    const activeAcademicPeriod = await getActiveAcademicPeriod();
+
+    res.status(200).json({
+      user: rows[0],
+      activeAcademicPeriod,
+    });
   } catch (error) {
     console.error("Error in me:", error);
     res.status(500).json({ message: "Internal server error." });

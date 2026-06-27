@@ -5,6 +5,18 @@ import { pool } from "../config/db";
  *
  * ALTER TABLE users
  *   ADD COLUMN full_name VARCHAR(255) NULL AFTER username;
+ *
+ * ALTER TABLE users
+ *   MODIFY COLUMN role ENUM(
+ *     'super_admin',
+ *     'admin',
+ *     'csg_president',
+ *     'it_governor',
+ *     'cba_governor',
+ *     'ceas_governor',
+ *     'coc_governor',
+ *     'chm_governor'
+ *   ) NOT NULL DEFAULT 'csg_president';
  */
 export async function createUsersTable(): Promise<void> {
   await pool.execute(`
@@ -14,6 +26,7 @@ export async function createUsersTable(): Promise<void> {
       full_name VARCHAR(255) NULL,
       password VARCHAR(255) NOT NULL,
         role ENUM(
+        'super_admin',
         'admin',
         'csg_president',
         'it_governor',

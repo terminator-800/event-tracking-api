@@ -4,13 +4,14 @@ import { SQL_STUDENT_FULL_NAME, SQL_STUDENT_YEAR_LEVEL, SQL_STUDENT_DEPARTMENT_N
 import { SQL_LATEST_ENROLLMENT_LEFT_JOIN, SQL_LATEST_PROGRAM_LEFT_JOIN } from "../../utils/studentEligibilitySql";
 import { Role } from "../../types/express";
 import { clampMoney, computeFineStatus } from "../../utils/paymentStatus";
+import { hasInstitutionAdminAccess } from "../../utils/roles";
 
 const SQL_USER_ENCODED_BY_NAME = `COALESCE(NULLIF(TRIM(u.full_name), ''), u.username)`;
 
 type SessionKind = "whole" | "am" | "pm";
 
 function isPaymentAdminUnfiltered(role: Role): boolean {
-  return role === "admin";
+  return hasInstitutionAdminAccess(role);
 }
 
 /** Governors + CSG president only see fines / events they created (same as Manage Event / Attendance). */
