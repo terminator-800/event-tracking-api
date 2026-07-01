@@ -1,5 +1,13 @@
 import { pool } from "../config/db";
 
+/**
+ * Existing database (run manually in MySQL Workbench):
+ *
+ * ALTER TABLE events
+ *   ADD COLUMN academic_period_id INT NULL AFTER created_by,
+ *   ADD CONSTRAINT fk_events_academic_period
+ *     FOREIGN KEY (academic_period_id) REFERENCES academic_periods(id) ON DELETE RESTRICT;
+ */
 export async function createEventsTable(): Promise<void> {
   await pool.execute(`
     CREATE TABLE IF NOT EXISTS events (
@@ -24,9 +32,11 @@ export async function createEventsTable(): Promise<void> {
       fine_amount         DECIMAL(10,2) NOT NULL DEFAULT 0,
       attendance_password_hash VARCHAR(255) NULL,
       created_by          INT NOT NULL,
+      academic_period_id  INT NULL,
       created_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
       updated_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-      FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE RESTRICT
+      FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE RESTRICT,
+      FOREIGN KEY (academic_period_id) REFERENCES academic_periods(id) ON DELETE RESTRICT
     );
   `);
 }

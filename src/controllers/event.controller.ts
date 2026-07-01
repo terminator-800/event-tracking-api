@@ -1,5 +1,7 @@
 import { Request, Response } from "express";
 import { pool } from "../config/db";
+import { getActiveAcademicPeriod } from "./services/academic-period.service";
+import { sqlActivePeriodEventsClause } from "../utils/studentEligibilitySql";
 import { ResultSetHeader } from "mysql2";
 import { Role } from "../types/express";
 import {
@@ -166,7 +168,7 @@ async createEvent(req: Request, res: Response): Promise<void> {
 
   const isAllDepartments = course_code === "All Departments";
 
-  if (userRole !== "admin" && userRole !== "csg_president") {
+  if (userRole !== "admin" && userRole !== "super_admin" && userRole !== "csg_president") {
     if (isAllDepartments) {
       res.status(403).json({ message: "Access denied for creating all-departments events." });
       return;
@@ -313,7 +315,7 @@ async createEvent(req: Request, res: Response): Promise<void> {
       }
     }
 
-    if (userRole !== "admin" && userRole !== "csg_president") {
+    if (userRole !== "admin" && userRole !== "super_admin" && userRole !== "csg_president") {
       if (!resolvedDepartmentId || resolvedDepartmentId !== userDepartmentId) {
         res.status(403).json({ message: "Access denied for creating events outside your department." });
         return;
@@ -322,6 +324,7 @@ async createEvent(req: Request, res: Response): Promise<void> {
   }
 
   const connection = await pool.getConnection();
+  const academicPeriodId = req.activeAcademicPeriod?.id ?? null;
 
   try {
     await connection.beginTransaction();
@@ -332,8 +335,8 @@ async createEvent(req: Request, res: Response): Promise<void> {
         am_time_in, am_grace_in, am_time_out, am_grace_out,
         pm_time_in, pm_grace_in, pm_time_out, pm_grace_out,
         is_mandatory, is_all_departments,
-        status, audience_notes, fine_amount, attendance_password_hash, created_by
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        status, audience_notes, fine_amount, attendance_password_hash, created_by, academic_period_id
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         name, date, venue, duration,
         amIn,  graceAmIn,  amOut, graceAmOut,
@@ -345,6 +348,7 @@ async createEvent(req: Request, res: Response): Promise<void> {
         fineAmount ?? 0,
         attendancePasswordHash,
         createdBy,
+        academicPeriodId,
       ]
     );
 
@@ -440,7 +444,7 @@ async updateEvent(req: Request, res: Response): Promise<void> {
       return;
     }
 
-    const adminRoles: Role[] = ["admin", "csg_president"];
+    const adminRoles: Role[] = ["admin", "super_admin", "csg_president"];
     if (!adminRoles.includes(userRole!)) {
       const isAllDepartments = Number(event.is_all_departments) === 1;
       if (!isAllDepartments) {
@@ -547,7 +551,7 @@ async deleteEvent(req: Request, res: Response): Promise<void> {
       return;
     }
 
-    const adminRoles: Role[] = ["admin", "csg_president"];
+    const adminRoles: Role[] = ["admin", "super_admin", "csg_president"];
     if (!adminRoles.includes(userRole!)) {
       const isAllDepartments = Number(event.is_all_departments) === 1;
       if (!isAllDepartments) {
@@ -587,11 +591,14 @@ if (!userId) {
   return;
 }
 
-  // Only `admin` sees every event cross-department. CSG presidents and governors only see events they created.
+  // `admin` and `super_admin` see every event cross-department. CSG presidents and governors only see events they created.
 try {
   let events: any[] = [];
+  const activePeriod = await getActiveAcademicPeriod();
+  const periodClause = activePeriod ? sqlActivePeriodEventsClause("e") : "";
+  const periodParams = activePeriod ? [activePeriod.id] : [];
 
-  if (userRole === "admin") {
+  if (userRole === "admin" || userRole === "super_admin") {
     const [rows]: any = await pool.execute(
       `SELECT
         e.*,
@@ -613,8 +620,10 @@ try {
       LEFT JOIN event_audiences ea ON ea.event_id = e.id
       LEFT JOIN departments d      ON d.id = ea.department_id
       LEFT JOIN programs p         ON p.id = ea.program_id
+      WHERE 1=1${periodClause}
       GROUP BY e.id
-      ORDER BY e.date DESC`
+      ORDER BY e.date DESC`,
+      periodParams,
     );
     events = rows;
 
@@ -640,10 +649,10 @@ try {
       LEFT JOIN event_audiences ea ON ea.event_id = e.id
       LEFT JOIN departments d      ON d.id = ea.department_id
       LEFT JOIN programs p         ON p.id = ea.program_id
-      WHERE e.created_by = ?
+      WHERE e.created_by = ?${periodClause}
       GROUP BY e.id
       ORDER BY e.date DESC`,
-      [userId]
+      [userId, ...periodParams],
     );
     events = rows;
 
@@ -683,10 +692,10 @@ try {
       LEFT JOIN departments d      ON d.id = ea.department_id
       LEFT JOIN programs p         ON p.id = ea.program_id
       WHERE (e.is_all_departments = 1 OR ea.department_id = ?)
-        AND e.created_by = ?
+        AND e.created_by = ?${periodClause}
       GROUP BY e.id
       ORDER BY e.date DESC`,
-      [departmentId, departmentId, userId]
+      [departmentId, departmentId, userId, ...periodParams],
     );
     events = rows;
   }

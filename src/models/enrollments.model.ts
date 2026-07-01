@@ -13,6 +13,11 @@ import { pool } from "../config/db";
  * ALTER TABLE enrollments ADD COLUMN school_year VARCHAR(20) NULL;
  * ALTER TABLE enrollments ADD COLUMN semester VARCHAR(20) NULL;
  * ALTER TABLE enrollments ADD COLUMN year_level INT NULL;
+ *
+ * ALTER TABLE enrollments
+ *   ADD COLUMN academic_period_id INT NULL AFTER program_id,
+ *   ADD CONSTRAINT fk_enrollments_academic_period
+ *     FOREIGN KEY (academic_period_id) REFERENCES academic_periods(id) ON DELETE RESTRICT;
  */
 
 /** School Year → school_year */
@@ -38,13 +43,15 @@ export async function createEnrollmentsTable(): Promise<void> {
       enrollment_ref VARCHAR(50) NULL UNIQUE,
       student_id INT NOT NULL,
       program_id INT NULL,
+      academic_period_id INT NULL,
       school_year VARCHAR(20) NULL,
       semester VARCHAR(20) NULL,
       year_level INT NULL,
       enrolled_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
       UNIQUE(student_id, program_id, school_year, semester),
       FOREIGN KEY (student_id) REFERENCES students(id),
-      FOREIGN KEY (program_id) REFERENCES programs(id)
+      FOREIGN KEY (program_id) REFERENCES programs(id),
+      FOREIGN KEY (academic_period_id) REFERENCES academic_periods(id) ON DELETE RESTRICT
     );
   `);
 }

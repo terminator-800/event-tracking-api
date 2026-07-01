@@ -190,7 +190,15 @@ export async function listDepartments() {
     .filter((row) => row.name && !isDepartmentExcludedFromImport(row.name));
 }
 
-export async function listUsers() {
+export function filterUsersForRole<T extends { role?: string | null }>(users: T[], requesterRole?: Role | null): T[] {
+  if (requesterRole === "admin") {
+    return users.filter((user) => String(user.role ?? "").toLowerCase() !== "super_admin");
+  }
+
+  return users;
+}
+
+export async function listUsers(requesterRole?: Role | null) {
   const [rows] = await pool.execute<RowDataPacket[]>(
     `SELECT 
       u.id,
@@ -207,7 +215,7 @@ export async function listUsers() {
     LEFT JOIN departments d ON d.id = u.department_id
     ORDER BY u.id DESC`,
   );
-  return rows;
+  return filterUsersForRole(rows as Array<{ role?: string | null }>, requesterRole);
 }
 
 export async function updateUserById(userId: number, payload: UpdateUserPayload): Promise<ServiceResult> {
@@ -265,4 +273,79 @@ export async function deleteUserById(userId: number): Promise<ServiceResult> {
     return { success: false, status: 404, message: "User not found." };
   }
   return { success: true, status: 200 };
+}
+
+export async function getSuperAdminStats() {
+  const [[userStats]] = await pool.execute<RowDataPacket[]>(`
+    SELECT
+      COUNT(*) AS total_users,
+      SUM(role = 'admin') AS total_admins,
+      SUM(role = 'super_admin') AS total_super_admins,
+      SUM(role = 'csg_president') AS total_csg_presidents,
+      SUM(role IN ('it_governor','cba_governor','ceas_governor','coc_governor','chm_governor')) AS total_governors
+    FROM users
+  `);
+
+  const [[eventStats]] = await pool.execute<RowDataPacket[]>(`
+    SELECT
+      COUNT(*) AS total_events,
+      SUM(status = 'upcoming') AS upcoming_events,
+      SUM(status = 'active') AS active_events,
+      SUM(status = 'completed') AS completed_events
+    FROM events
+  `);
+
+  const [[studentStats]] = await pool.execute<RowDataPacket[]>(`
+    SELECT COUNT(*) AS total_students FROM students
+  `);
+
+  const [[paymentStats]] = await pool.execute<RowDataPacket[]>(`
+    SELECT
+      COUNT(*) AS total_payments,
+      COALESCE(SUM(amount), 0) AS total_amount_collected
+    FROM payments
+    WHERE status = 'paid'
+  `).catch(() => [[{ total_payments: 0, total_amount_collected: 0 }]]);
+
+  return {
+    users: userStats,
+    events: eventStats,
+    students: studentStats,
+    payments: paymentStats,
+  };
+}
+
+export async function getAuditLogs() {
+  const [recentUsers] = await pool.execute<RowDataPacket[]>(`
+    SELECT
+      u.id,
+      'user_created' AS action,
+      CONCAT('User "', u.username, '" (', u.role, ') was created') AS description,
+      u.created_at AS timestamp,
+      'system' AS performed_by
+    FROM users u
+    ORDER BY u.created_at DESC
+    LIMIT 50
+  `);
+
+  const [recentEvents] = await pool.execute<RowDataPacket[]>(`
+    SELECT
+      e.id,
+      'event_created' AS action,
+      CONCAT('Event "', e.name, '" was created (status: ', e.status, ')') AS description,
+      e.created_at AS timestamp,
+      COALESCE(u.username, 'system') AS performed_by
+    FROM events e
+    LEFT JOIN users u ON u.id = e.created_by
+    ORDER BY e.created_at DESC
+    LIMIT 50
+  `).catch(() => [[]]);
+
+  const combined = [
+    ...(Array.isArray(recentUsers) ? recentUsers : []),
+    ...(Array.isArray(recentEvents) ? recentEvents : []),
+  ].sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
+    .slice(0, 100);
+
+  return combined;
 }

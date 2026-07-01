@@ -4,12 +4,14 @@ import { testDatabaseConnection } from "./config/db";
 import { createTables } from "./models/index";
 import { registerEventStatusCron } from "./cron/event.status.updater";
 import { ensureDefaultAdmin } from "./seed/ensureDefaultAdmin";
+import { ensureDefaultSuperAdmin } from "./seed/ensureDefaultSuperAdmin";
 
 async function startServer(): Promise<void> {
   try {
     await testDatabaseConnection();
     await createTables();
     await ensureDefaultAdmin();
+    await ensureDefaultSuperAdmin();
     console.log("MySQL connected successfully");
 
     registerEventStatusCron();

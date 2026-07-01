@@ -20,6 +20,9 @@ import {
   STUDENTS_CSV_STUDENT_NUMBER_HEADERS,
   STUDENTS_CSV_YEAR_LEVEL_HEADERS,
 } from "../../models/students.models";
+import { getActiveAcademicPeriod } from "./academic-period.service";
+import { normalizeSchoolYear } from "../../utils/academicPeriod";
+import type { AcademicPeriodRow } from "../../repositories/queries/academic-periods.queries";
 
 type ImportCounts = {
   departments: number;
@@ -481,25 +484,27 @@ async function upsertEnrollment(
   studentId: number,
   programId: number,
   schoolYear: string,
+  academicPeriodId: number | null,
+  effectiveSemester: string,
 ): Promise<"inserted" | "updated"> {
   const [existingKey] = await connection.execute<RowDataPacket[]>(
     "SELECT id FROM enrollments WHERE student_id = ? AND program_id = ? AND school_year = ? AND semester = ? LIMIT 1",
-    [studentId, programId, schoolYear, row.semester],
+    [studentId, programId, schoolYear, effectiveSemester],
   );
 
   if (existingKey.length > 0) {
-    if (row.yearLevel != null) {
-      await connection.execute("UPDATE enrollments SET year_level = ? WHERE id = ?", [
-        row.yearLevel,
-        Number(existingKey[0].id),
-      ]);
+    if (row.yearLevel != null || academicPeriodId != null) {
+      await connection.execute(
+        "UPDATE enrollments SET year_level = COALESCE(?, year_level), academic_period_id = COALESCE(?, academic_period_id) WHERE id = ?",
+        [row.yearLevel, academicPeriodId, Number(existingKey[0].id)],
+      );
     }
     return "updated";
   }
 
   await connection.execute(
-    "INSERT INTO enrollments (student_id, program_id, school_year, semester, year_level) VALUES (?, ?, ?, ?, ?)",
-    [studentId, programId, schoolYear, row.semester, row.yearLevel],
+    "INSERT INTO enrollments (student_id, program_id, academic_period_id, school_year, semester, year_level) VALUES (?, ?, ?, ?, ?, ?)",
+    [studentId, programId, academicPeriodId, schoolYear, effectiveSemester, row.yearLevel],
   );
   return "inserted";
 }
@@ -509,6 +514,7 @@ async function linkStudentDepartment(
   row: CsvRow,
   studentPk: number,
   inserted: ImportCounts,
+  activePeriod: AcademicPeriodRow | null,
 ): Promise<void> {
   if (!row.hasEnrollmentFields && !row.hasDepartmentOnly) return;
 
@@ -520,8 +526,40 @@ async function linkStudentDepartment(
     : await getOrCreatePlaceholderProgram(connection, dept.id);
   if (program.inserted) inserted.programs += 1;
 
-  const schoolYear = row.schoolYear?.trim() || DEPARTMENT_ONLY_SCHOOL_YEAR;
-  const enrollmentState = await upsertEnrollment(connection, row, studentPk, program.id, schoolYear);
+  let schoolYear = row.schoolYear?.trim() || DEPARTMENT_ONLY_SCHOOL_YEAR;
+  let semester = row.semester;
+  const academicPeriodId = activePeriod?.id ?? null;
+
+  if (activePeriod) {
+    if (row.hasEnrollmentFields && row.schoolYear?.trim()) {
+      const csvSchoolYear = normalizeSchoolYear(row.schoolYear);
+      if (csvSchoolYear && csvSchoolYear !== activePeriod.school_year) {
+        throw new Error(
+          `School year "${row.schoolYear}" does not match the active period (${activePeriod.school_year}).`,
+        );
+      }
+    }
+    if (row.hasEnrollmentFields && row.semester?.trim()) {
+      const csvSemester = normalizeSemester(row.semester);
+      if (csvSemester && csvSemester !== activePeriod.semester) {
+        throw new Error(
+          `Semester "${row.semester}" does not match the active period (${activePeriod.semester}).`,
+        );
+      }
+    }
+    schoolYear = activePeriod.school_year;
+    semester = activePeriod.semester;
+  }
+
+  const enrollmentState = await upsertEnrollment(
+    connection,
+    row,
+    studentPk,
+    program.id,
+    schoolYear,
+    academicPeriodId,
+    semester,
+  );
   if (enrollmentState === "inserted") inserted.enrollments += 1;
 }
 
@@ -557,6 +595,11 @@ async function getStudentDepartmentMajorSummary(
 }
 
 export async function importStudentsCsv(fileBuffer: Buffer): Promise<ImportStudentsCsvResult> {
+  const activePeriod = await getActiveAcademicPeriod();
+  if (!activePeriod) {
+    throw new Error("No active school year and semester. Activate an academic period before importing students.");
+  }
+
   const csvText = fileBuffer.toString("utf-8");
   const { rows, errors } = parseRows(csvText);
   const skipped: Array<{ row: number; reason: string }> = [];
@@ -615,7 +658,7 @@ export async function importStudentsCsv(fileBuffer: Buffer): Promise<ImportStude
           });
         }
 
-        await linkStudentDepartment(connection, row, student.id, inserted);
+        await linkStudentDepartment(connection, row, student.id, inserted, activePeriod);
 
         importedRows += 1;
       } catch (rowError) {

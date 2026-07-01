@@ -143,10 +143,10 @@ export class StudentDashboardController {
         return;
       }
 
-      // Admins see institution-wide stats; governors and CSG president only stats for events they created.
-      const isAdminFullAccess = role === "admin";
+      // Admins and super admins see institution-wide stats; governors and CSG president only see stats for events they created.
+      const isAdminFullAccess = role === "admin" || role === "super_admin";
 
-      const adminStyleDepartmentBypass: Role[] = ["admin", "csg_president"];
+      const adminStyleDepartmentBypass: Role[] = ["admin", "super_admin", "csg_president"];
       if (!adminStyleDepartmentBypass.includes(role) && (departmentId == null || departmentId === undefined)) {
         res.status(200).json({ students: [] });
         return;
@@ -192,7 +192,7 @@ export class StudentDashboardController {
       const role = req.user?.role as Role | undefined;
       const userId = req.user?.id;
       const departmentId = req.user?.department_id ?? null;
-      const isAdminFullAccess = role === "admin";
+      const isAdminFullAccess = role === "admin" || role === "super_admin";
 
       if (!role) {
         res.status(401).json({ message: "Unauthorized" });
@@ -224,7 +224,7 @@ export class StudentDashboardController {
         return;
       }
 
-      const adminStyleDepartmentBypass: Role[] = ["admin", "csg_president"];
+      const adminStyleDepartmentBypass: Role[] = ["admin", "super_admin", "csg_president"];
       if (!adminStyleDepartmentBypass.includes(role) && ctx.program_id > 0) {
         const [progRows] = await pool.execute<RowDataPacket[]>(
           `SELECT department_id FROM programs WHERE id = ? LIMIT 1`,

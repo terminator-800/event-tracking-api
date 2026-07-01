@@ -4,9 +4,11 @@ import { Role } from "../types/express";
 import { SQL_STUDENT_FULL_NAME, SQL_STUDENT_YEAR_LEVEL } from "../utils/studentDisplaySql";
 import {
   buildEligibleStudentsQuery,
-  SQL_LATEST_ENROLLMENT_LEFT_JOIN,
+  sqlLatestEnrollmentLeftJoin,
   SQL_LATEST_PROGRAM_LEFT_JOIN,
+  sqlActivePeriodEventsClause,
 } from "../utils/studentEligibilitySql";
+import { getActiveAcademicPeriod } from "./academic-periods.repository";
 
 export interface ScopedEventRow extends RowDataPacket {
   id: number;
@@ -69,6 +71,9 @@ function parseAudienceEntries(raw: unknown): Array<{ department_id?: unknown }> 
 }
 
 export async function selectScopedEvents(userRole: Role, userId: number): Promise<ScopedEventRow[]> {
+  const activePeriod = await getActiveAcademicPeriod();
+  const periodClause = activePeriod ? sqlActivePeriodEventsClause("e") : "";
+  const periodParams = activePeriod ? [activePeriod.id] : [];
   const audienceAggSql = `JSON_ARRAYAGG(
           JSON_OBJECT(
             'department_id',   ea.department_id,
@@ -91,8 +96,10 @@ export async function selectScopedEvents(userRole: Role, userId: number): Promis
       LEFT JOIN event_audiences ea ON ea.event_id = e.id
       LEFT JOIN departments d      ON d.id = ea.department_id
       LEFT JOIN programs p         ON p.id = ea.program_id
+      WHERE 1=1${periodClause}
       GROUP BY e.id
       ORDER BY e.date DESC`,
+      periodParams,
     );
     return rows;
   }
@@ -106,10 +113,10 @@ export async function selectScopedEvents(userRole: Role, userId: number): Promis
       LEFT JOIN event_audiences ea ON ea.event_id = e.id
       LEFT JOIN departments d      ON d.id = ea.department_id
       LEFT JOIN programs p         ON p.id = ea.program_id
-      WHERE e.created_by = ?
+      WHERE e.created_by = ?${periodClause}
       GROUP BY e.id
       ORDER BY e.date DESC`,
-      [userId],
+      [userId, ...periodParams],
     );
     return rows;
   }
@@ -129,10 +136,10 @@ export async function selectScopedEvents(userRole: Role, userId: number): Promis
     LEFT JOIN departments d      ON d.id = ea.department_id
     LEFT JOIN programs p         ON p.id = ea.program_id
     WHERE (e.is_all_departments = 1 OR ea.department_id = ?)
-      AND e.created_by = ?
+      AND e.created_by = ?${periodClause}
     GROUP BY e.id
     ORDER BY e.date DESC`,
-    [deptId, deptId, userId],
+    [deptId, deptId, userId, ...periodParams],
   );
   return rows;
 }
@@ -152,6 +159,8 @@ export async function countEligibleStudents(
   eventId: number,
   scopeDepartmentId: AttendanceRosterDepartmentScope = null,
 ): Promise<number> {
+  const activePeriod = await getActiveAcademicPeriod();
+  const enrollmentJoin = sqlLatestEnrollmentLeftJoin(activePeriod?.id ?? null);
   const [evRows]: any = await pool.execute(
     `SELECT is_all_departments FROM events WHERE id = ? LIMIT 1`,
     [eventId],
@@ -159,7 +168,12 @@ export async function countEligibleStudents(
   if (!evRows.length) return 0;
   const isAll = Number(evRows[0].is_all_departments) === 1;
   const audienceYearLevel = await getEventAudienceYearLevel(eventId);
-  const { sql, params } = buildEligibleStudentsQuery(eventId, isAll, audienceYearLevel);
+  const { sql, params } = buildEligibleStudentsQuery(
+    eventId,
+    isAll,
+    audienceYearLevel,
+    activePeriod?.id ?? null,
+  );
 
   if (isAll) {
     const [rows]: any = await pool.execute(
@@ -175,7 +189,7 @@ export async function countEligibleStudents(
       `SELECT COUNT(*) AS c
        FROM (${sql}) eligible
        INNER JOIN students s ON s.id = eligible.student_id
-       ${SQL_LATEST_ENROLLMENT_LEFT_JOIN}
+       ${enrollmentJoin}
        ${SQL_LATEST_PROGRAM_LEFT_JOIN}
        WHERE en.id IS NULL OR p.department_id = ?`,
       [...params, dept],
@@ -200,6 +214,8 @@ export async function countAttendedStudents(
   duration: string,
   scopeDepartmentId: AttendanceRosterDepartmentScope = null,
 ): Promise<number> {
+  const activePeriod = await getActiveAcademicPeriod();
+  const enrollmentJoin = sqlLatestEnrollmentLeftJoin(activePeriod?.id ?? null);
   const cond = attendedConditionSql(duration);
   if (scopeDepartmentId == null) {
     const [rows]: any = await pool.execute(
@@ -226,7 +242,7 @@ export async function countAttendedStudents(
     `SELECT COUNT(*) AS c
      FROM attendance a
      INNER JOIN students s ON s.id = a.student_id
-     ${SQL_LATEST_ENROLLMENT_LEFT_JOIN}
+     ${enrollmentJoin}
      ${SQL_LATEST_PROGRAM_LEFT_JOIN}
      WHERE a.event_id = ? AND (${cond}) AND en.id IS NOT NULL AND p.department_id = ?`,
     [eventId, dept],
@@ -253,6 +269,8 @@ export async function selectStudentsForEventDetail(
   eventId: number,
   scopeDepartmentId: AttendanceRosterDepartmentScope = null,
 ): Promise<EventStudentRow[]> {
+  const activePeriod = await getActiveAcademicPeriod();
+  const enrollmentJoin = sqlLatestEnrollmentLeftJoin(activePeriod?.id ?? null);
   const [evRows]: any = await pool.execute(
     `SELECT is_all_departments FROM events WHERE id = ? LIMIT 1`,
     [eventId],
@@ -264,6 +282,7 @@ export async function selectStudentsForEventDetail(
     eventId,
     isAll,
     audienceYearLevel,
+    activePeriod?.id ?? null,
   );
 
   const baseSql = `SELECT
@@ -280,7 +299,7 @@ export async function selectStudentsForEventDetail(
       a.pm_time_out,
       (SELECT COALESCE(SUM(f.amount), 0) FROM fines f WHERE f.student_id = s.id AND f.event_id = ?) AS fine_total
      FROM students s
-     ${SQL_LATEST_ENROLLMENT_LEFT_JOIN}
+     ${enrollmentJoin}
      ${SQL_LATEST_PROGRAM_LEFT_JOIN}
      LEFT JOIN departments d ON d.id = p.department_id
      INNER JOIN (${eligibleSql}) eligible ON eligible.student_id = s.id

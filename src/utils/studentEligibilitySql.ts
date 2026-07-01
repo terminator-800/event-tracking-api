@@ -5,6 +5,23 @@ export const SQL_LATEST_ENROLLMENT_LEFT_JOIN = `LEFT JOIN enrollments en ON en.i
   SELECT e2.id FROM enrollments e2 WHERE e2.student_id = s.id ORDER BY e2.id DESC LIMIT 1
 )`;
 
+/** Prefer enrollment for the active academic period when set. */
+export function sqlLatestEnrollmentLeftJoin(activePeriodId: number | null | undefined): string {
+  if (activePeriodId != null && Number.isFinite(Number(activePeriodId))) {
+    const id = Number(activePeriodId);
+    return `LEFT JOIN enrollments en ON en.id = (
+      SELECT e2.id FROM enrollments e2
+      WHERE e2.student_id = s.id AND e2.academic_period_id = ${id}
+      ORDER BY e2.id DESC LIMIT 1
+    )`;
+  }
+  return SQL_LATEST_ENROLLMENT_LEFT_JOIN;
+}
+
+export function sqlActivePeriodEventsClause(alias = "e"): string {
+  return ` AND (${alias}.academic_period_id = ? OR ${alias}.academic_period_id IS NULL)`;
+}
+
 export const SQL_LATEST_PROGRAM_LEFT_JOIN = `LEFT JOIN programs p ON p.id = en.program_id`;
 
 /**
@@ -37,10 +54,12 @@ export function buildEligibleStudentsQuery(
   eventId: number,
   isAllDepartments: boolean,
   audienceYearLevel: number | null,
+  activePeriodId: number | null = null,
 ): EligibleStudentsQuery {
+  const enrollmentJoin = sqlLatestEnrollmentLeftJoin(activePeriodId);
   const base = `SELECT DISTINCT s.id AS student_id
     FROM students s
-    ${SQL_LATEST_ENROLLMENT_LEFT_JOIN}
+    ${enrollmentJoin}
     ${SQL_LATEST_PROGRAM_LEFT_JOIN}`;
 
   if (isAllDepartments) {

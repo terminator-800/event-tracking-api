@@ -8,6 +8,7 @@ const controller = new AttendancePageController();
 
 const attendancePageRoles = [
   "admin",
+  "super_admin",
   "csg_president",
   "it_governor",
   "cba_governor",

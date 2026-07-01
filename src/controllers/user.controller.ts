@@ -2,7 +2,7 @@
 
 import { Request, Response } from "express";
 import { validateRequiredFields } from '../utils/validate';
-import { createUser, deleteUserById, listDepartments, listUsers, updateUserById } from './services/user.service'
+import { createUser, deleteUserById, getAuditLogs, getSuperAdminStats, listDepartments, listUsers, updateUserById } from './services/user.service'
 import { importStudentsCsv } from "./services/import-students-csv.service";
 
 export class UserController {
@@ -47,9 +47,9 @@ export class UserController {
     }
   }
 
-  async listUsers(_req: Request, res: Response): Promise<void> {
+  async listUsers(req: Request, res: Response): Promise<void> {
     try {
-      const users = await listUsers();
+      const users = await listUsers(req.user?.role);
       res.status(200).json({ users });
     } catch (error) {
       console.error("Error listing users:", error);
@@ -96,6 +96,26 @@ export class UserController {
       res.status(200).json({ message: "User deleted successfully." });
     } catch (error) {
       console.error("Error deleting user:", error);
+      res.status(500).json({ message: "Internal server error." });
+    }
+  }
+
+  async getSuperAdminStats(_req: Request, res: Response): Promise<void> {
+    try {
+      const stats = await getSuperAdminStats();
+      res.status(200).json(stats);
+    } catch (error) {
+      console.error("Error fetching super admin stats:", error);
+      res.status(500).json({ message: "Internal server error." });
+    }
+  }
+
+  async getAuditLogs(_req: Request, res: Response): Promise<void> {
+    try {
+      const logs = await getAuditLogs();
+      res.status(200).json({ logs });
+    } catch (error) {
+      console.error("Error fetching audit logs:", error);
       res.status(500).json({ message: "Internal server error." });
     }
   }
