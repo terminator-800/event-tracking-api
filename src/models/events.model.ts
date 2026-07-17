@@ -5,8 +5,14 @@ import { pool } from "../config/db";
  *
  * ALTER TABLE events
  *   ADD COLUMN academic_period_id INT NULL AFTER created_by,
+ *   ADD INDEX idx_events_academic_period (academic_period_id),
  *   ADD CONSTRAINT fk_events_academic_period
  *     FOREIGN KEY (academic_period_id) REFERENCES academic_periods(id) ON DELETE RESTRICT;
+ *
+ * If academic_period_id already exists but the index does not:
+ *
+ * ALTER TABLE events
+ *   ADD INDEX idx_events_academic_period (academic_period_id);
  */
 export async function createEventsTable(): Promise<void> {
   await pool.execute(`
@@ -35,6 +41,7 @@ export async function createEventsTable(): Promise<void> {
       academic_period_id  INT NULL,
       created_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
       updated_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      INDEX idx_events_academic_period (academic_period_id),
       FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE RESTRICT,
       FOREIGN KEY (academic_period_id) REFERENCES academic_periods(id) ON DELETE RESTRICT
     );

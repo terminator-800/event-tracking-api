@@ -1,10 +1,13 @@
 import { pool } from "../config/db";
 
 /**
- * CSV import → enrollments table (all optional):
+ * CSV import → enrollments table (semester roster snapshot):
  *   School Year  → school_year
  *   Semester     → semester
  *   Year Level   → year_level
+ *
+ * Each academic period has its own enrollment snapshot. Importing for 2nd Sem
+ * must not delete or overwrite enrollments from 1st Sem.
  *
  * Existing database (run manually in MySQL Workbench if columns are missing):
  *
@@ -16,8 +19,14 @@ import { pool } from "../config/db";
  *
  * ALTER TABLE enrollments
  *   ADD COLUMN academic_period_id INT NULL AFTER program_id,
+ *   ADD INDEX idx_enrollments_academic_period (academic_period_id),
  *   ADD CONSTRAINT fk_enrollments_academic_period
  *     FOREIGN KEY (academic_period_id) REFERENCES academic_periods(id) ON DELETE RESTRICT;
+ *
+ * Optional after data cleanup (one roster row per student per period):
+ *
+ * ALTER TABLE enrollments
+ *   ADD UNIQUE KEY uq_enrollment_student_period (student_id, academic_period_id);
  */
 
 /** School Year → school_year */
@@ -49,6 +58,7 @@ export async function createEnrollmentsTable(): Promise<void> {
       year_level INT NULL,
       enrolled_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
       UNIQUE(student_id, program_id, school_year, semester),
+      INDEX idx_enrollments_academic_period (academic_period_id),
       FOREIGN KEY (student_id) REFERENCES students(id),
       FOREIGN KEY (program_id) REFERENCES programs(id),
       FOREIGN KEY (academic_period_id) REFERENCES academic_periods(id) ON DELETE RESTRICT
