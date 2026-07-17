@@ -2,8 +2,10 @@ import { Request, Response } from "express";
 import { pool } from "../config/db";
 import { getManilaDateTime } from "../utils/manilaDateTime";
 import { SQL_STUDENT_YEAR_LEVEL } from "../utils/studentDisplaySql";
+import { sqlLatestEnrollmentLeftJoin } from "../utils/studentEligibilitySql";
 import { verifyEventPassword as compareEventPassword } from "./services/event-password.service";
 import { signEventUnlockToken, verifyEventUnlockToken } from "../utils/eventUnlockToken";
+import { getActiveAcademicPeriod } from "../repositories/academic-periods.repository";
 
 export class AttendanceController {
 
@@ -75,34 +77,46 @@ private async findStudentByIdentifier(identifier: string) {
 }
 
 private async findOngoingEvent(currentDate: string) {
+  const activePeriod = await getActiveAcademicPeriod();
+  const periodSql = activePeriod ? " AND academic_period_id = ?" : " AND 1=0";
+  const params: (string | number)[] = [currentDate];
+  if (activePeriod) params.push(activePeriod.id);
+
   const [rows] = await pool.execute(
     `SELECT id, duration, fine_amount,
             am_time_in, am_grace_in, am_time_out,
             pm_time_in, pm_grace_in, pm_time_out,
-            is_all_departments, attendance_password_hash
+            is_all_departments, attendance_password_hash, academic_period_id
       FROM events
       WHERE status = 'Ongoing'
         AND date = ?
+        ${periodSql}
       ORDER BY id ASC
       LIMIT 1`,
-    [currentDate]
+    params,
   );
   return (rows as any[])[0] ?? null;
 }
 
 /** When the client sends eventId (multiple ongoing events same day), resolve that row only. */
 private async findOngoingEventById(eventId: number, currentDate: string) {
+  const activePeriod = await getActiveAcademicPeriod();
+  const periodSql = activePeriod ? " AND academic_period_id = ?" : " AND 1=0";
+  const params: (string | number)[] = [eventId, currentDate];
+  if (activePeriod) params.push(activePeriod.id);
+
   const [rows] = await pool.execute(
     `SELECT id, duration, fine_amount,
             am_time_in, am_grace_in, am_time_out,
             pm_time_in, pm_grace_in, pm_time_out,
-            is_all_departments, attendance_password_hash
+            is_all_departments, attendance_password_hash, academic_period_id
       FROM events
       WHERE id = ?
         AND status = 'Ongoing'
         AND date = ?
+        ${periodSql}
       LIMIT 1`,
-    [eventId, currentDate]
+    params,
   );
   return (rows as any[])[0] ?? null;
 }
@@ -140,21 +154,37 @@ private assertEventAttendanceUnlocked(
   return { ok: true };
 }
 
-private async recordTimeIn(studentId: number, eventId: number, column: string, currentTime: string) {
+private async recordTimeIn(
+  studentId: number,
+  eventId: number,
+  academicPeriodId: number | null,
+  column: string,
+  currentTime: string,
+) {
   await pool.execute(
-    `INSERT INTO attendance (student_id, event_id, ${column})
-      VALUES (?, ?, ?)
-      ON DUPLICATE KEY UPDATE ${column} = IF(${column} IS NULL, VALUES(${column}), ${column})`,
-    [studentId, eventId, currentTime]
+    `INSERT INTO attendance (student_id, event_id, academic_period_id, ${column})
+      VALUES (?, ?, ?, ?)
+      ON DUPLICATE KEY UPDATE
+        ${column} = IF(${column} IS NULL, VALUES(${column}), ${column}),
+        academic_period_id = COALESCE(attendance.academic_period_id, VALUES(academic_period_id))`,
+    [studentId, eventId, academicPeriodId, currentTime],
   );
 }
 
-private async recordTimeOut(studentId: number, eventId: number, column: string, currentTime: string) {
+private async recordTimeOut(
+  studentId: number,
+  eventId: number,
+  academicPeriodId: number | null,
+  column: string,
+  currentTime: string,
+) {
   await pool.execute(
-    `INSERT INTO attendance (student_id, event_id, ${column})
-      VALUES (?, ?, ?)
-      ON DUPLICATE KEY UPDATE ${column} = IF(${column} IS NULL, VALUES(${column}), ${column})`,
-    [studentId, eventId, currentTime]
+    `INSERT INTO attendance (student_id, event_id, academic_period_id, ${column})
+      VALUES (?, ?, ?, ?)
+      ON DUPLICATE KEY UPDATE
+        ${column} = IF(${column} IS NULL, VALUES(${column}), ${column}),
+        academic_period_id = COALESCE(attendance.academic_period_id, VALUES(academic_period_id))`,
+    [studentId, eventId, academicPeriodId, currentTime],
   );
 }
 
@@ -204,11 +234,18 @@ private getSlotAttendanceStatus(
   };
 }
 
-private async createLateFine(studentId: number, eventId: number, attendanceId: number, reason: string, amount: number) {
+private async createLateFine(
+  studentId: number,
+  eventId: number,
+  attendanceId: number,
+  academicPeriodId: number | null,
+  reason: string,
+  amount: number,
+) {
   await pool.execute(
-    `INSERT IGNORE INTO fines (student_id, event_id, attendance_id, reason, amount)
-      VALUES (?, ?, ?, ?, ?)`,
-    [studentId, eventId, attendanceId, reason, amount]
+    `INSERT IGNORE INTO fines (student_id, event_id, attendance_id, academic_period_id, reason, amount)
+      VALUES (?, ?, ?, ?, ?, ?)`,
+    [studentId, eventId, attendanceId, academicPeriodId, reason, amount],
   );
 }
 
@@ -249,24 +286,31 @@ private canRecordTimeOut(slot: "AM" | "PM", event: any, currentTime: string): bo
 }
 
 private async isStudentInEventAudience(studentId: number, eventId: number, isAllDepartments: boolean): Promise<boolean> {
+  const [eventRows] = await pool.execute(
+    `SELECT academic_period_id FROM events WHERE id = ? LIMIT 1`,
+    [eventId],
+  );
+  const eventPeriodId = (eventRows as any[])[0]?.academic_period_id ?? null;
+  const activePeriod = eventPeriodId == null ? await getActiveAcademicPeriod() : null;
+  const periodId = eventPeriodId != null ? Number(eventPeriodId) : activePeriod?.id ?? null;
+  const enrollmentJoin = sqlLatestEnrollmentLeftJoin(periodId);
+
   if (isAllDepartments) {
     const [audienceRows] = await pool.execute(
       `SELECT year_level FROM event_audiences WHERE event_id = ? AND year_level IS NOT NULL LIMIT 1`,
       [eventId],
     );
     const audience = (audienceRows as any[])[0];
-    if (!audience) return true;
 
     const [rows] = await pool.execute(
       `SELECT s.id
        FROM students s
-       LEFT JOIN enrollments en ON en.id = (
-         SELECT e2.id FROM enrollments e2 WHERE e2.student_id = s.id ORDER BY e2.id DESC LIMIT 1
-       )
+       ${enrollmentJoin}
        WHERE s.id = ?
-         AND ${SQL_STUDENT_YEAR_LEVEL} = ?
+         AND en.id IS NOT NULL
+         ${audience ? `AND ${SQL_STUDENT_YEAR_LEVEL} = ?` : ""}
        LIMIT 1`,
-      [studentId, audience.year_level],
+      audience ? [studentId, audience.year_level] : [studentId],
     );
     return (rows as any[]).length > 0;
   }
@@ -274,31 +318,19 @@ private async isStudentInEventAudience(studentId: number, eventId: number, isAll
   const [rows] = await pool.execute(
     `SELECT 1 AS ok
      FROM students s
-     LEFT JOIN enrollments en ON en.id = (
-       SELECT e2.id FROM enrollments e2 WHERE e2.student_id = s.id ORDER BY e2.id DESC LIMIT 1
-     )
+     ${enrollmentJoin}
      LEFT JOIN programs p ON p.id = en.program_id
      WHERE s.id = ?
-       AND (
-         en.id IS NOT NULL AND EXISTS (
-           SELECT 1 FROM event_audiences ea
-           WHERE ea.event_id = ?
-             AND (ea.department_id IS NULL OR ea.department_id = p.department_id)
-             AND (ea.program_id IS NULL OR ea.program_id = en.program_id)
-             AND (ea.year_level IS NULL OR ea.year_level = ${SQL_STUDENT_YEAR_LEVEL})
-         )
-         OR (
-           en.id IS NULL AND EXISTS (
-             SELECT 1 FROM event_audiences ea2
-             WHERE ea2.event_id = ?
-               AND ea2.program_id IS NULL
-               AND ea2.department_id IS NULL
-               AND (ea2.year_level IS NULL OR ea2.year_level = s.year_level)
-           )
-         )
+       AND en.id IS NOT NULL
+       AND EXISTS (
+         SELECT 1 FROM event_audiences ea
+         WHERE ea.event_id = ?
+           AND (ea.department_id IS NULL OR ea.department_id = p.department_id)
+           AND (ea.program_id IS NULL OR ea.program_id = en.program_id)
+           AND (ea.year_level IS NULL OR ea.year_level = ${SQL_STUDENT_YEAR_LEVEL})
        )
      LIMIT 1`,
-    [studentId, eventId, eventId],
+    [studentId, eventId],
   );
   return (rows as any[]).length > 0;
 }
@@ -439,6 +471,10 @@ public recordAttendance = async (req: Request, res: Response): Promise<void> => 
 
     const slot = this.determineSlot(currentTime, event);
     const isAM = slot === "AM";
+    const academicPeriodId =
+      event.academic_period_id != null && Number.isFinite(Number(event.academic_period_id))
+        ? Number(event.academic_period_id)
+        : (await getActiveAcademicPeriod())?.id ?? null;
     const attendanceRow = await this.findAttendanceRow(student.id, event.id);
     const { timeInDone, timeOutDone } = this.getSlotAttendanceStatus(attendanceRow, slot);
     const inferredKind = this.inferAttendanceKindFromSlot(attendanceRow, slot);
@@ -454,7 +490,7 @@ public recordAttendance = async (req: Request, res: Response): Promise<void> => 
 
     if (resolvedAttendanceKind === "in") {
       const column = isAM ? "am_time_in" : "pm_time_in";
-      await this.recordTimeIn(student.id, event.id, column, currentTime);
+      await this.recordTimeIn(student.id, event.id, academicPeriodId, column, currentTime);
 
       const late = this.isLateArrival(
         isAM ? event.am_time_in : event.pm_time_in,
@@ -468,6 +504,7 @@ public recordAttendance = async (req: Request, res: Response): Promise<void> => 
           student.id,
           event.id,
           attendance.id,
+          academicPeriodId,
           isAM ? "Late AM" : "Late PM",
           event.fine_amount
         );
@@ -492,7 +529,7 @@ public recordAttendance = async (req: Request, res: Response): Promise<void> => 
       }
 
       const column = isAM ? "am_time_out" : "pm_time_out";
-      await this.recordTimeOut(student.id, event.id, column, currentTime);
+      await this.recordTimeOut(student.id, event.id, academicPeriodId, column, currentTime);
     }
 
     res.status(200).json({ message: `Attendance ${resolvedAttendanceKind} recorded successfully.` });

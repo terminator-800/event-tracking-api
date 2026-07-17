@@ -14,7 +14,7 @@ async function startServer(): Promise<void> {
     await ensureDefaultSuperAdmin();
     console.log("MySQL connected successfully");
 
-    registerEventStatusCron();
+    await registerEventStatusCron();
 
     app.listen(env.port, () => {
       console.log(`Server running at http://localhost:${env.port}`);

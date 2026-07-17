@@ -132,6 +132,79 @@ export async function createAcademicPeriod(
   return { success: true, status: 201, data: { period } };
 }
 
+/**
+ * Creates the standard 1st and 2nd semester rows for one school year atomically.
+ * Used by System Settings so a partially-created school year cannot occur.
+ */
+export async function createAcademicYearPeriods(
+  schoolYearInput: string,
+  createdByUserId: number | null,
+): Promise<ServiceResult<{ periods: AcademicPeriodRow[] }>> {
+  const schoolYear = normalizeSchoolYear(schoolYearInput);
+  if (!schoolYear) {
+    return { success: false, status: 400, message: "School year is required." };
+  }
+
+  const semesters: AcademicPeriodSemester[] = ["1st sem", "2nd sem"];
+  const connection = await pool.getConnection();
+
+  try {
+    await connection.beginTransaction();
+
+    const [existing] = await connection.execute<RowDataPacket[]>(
+      `SELECT semester
+       FROM academic_periods
+       WHERE school_year = ? AND semester IN ('1st sem', '2nd sem')`,
+      [schoolYear],
+    );
+    if (existing.length > 0) {
+      await connection.rollback();
+      return {
+        success: false,
+        status: 409,
+        message: "This school year already has a 1st or 2nd semester record.",
+      };
+    }
+
+    const createdIds: number[] = [];
+    for (const semester of semesters) {
+      const [result] = await connection.execute<ResultSetHeader>(
+        ACADEMIC_PERIOD_QUERIES.insert,
+        [
+          schoolYear,
+          semester,
+          formatAcademicPeriodLabel(schoolYear, semester),
+          null,
+          null,
+          createdByUserId,
+        ],
+      );
+      createdIds.push(Number(result.insertId));
+    }
+
+    await connection.commit();
+
+    const periods = (
+      await Promise.all(createdIds.map((id) => getAcademicPeriodById(id)))
+    ).filter((period): period is AcademicPeriodRow => period != null);
+
+    if (periods.length !== semesters.length) {
+      return {
+        success: false,
+        status: 500,
+        message: "Academic periods were created but could not be loaded.",
+      };
+    }
+
+    return { success: true, status: 201, data: { periods } };
+  } catch (error) {
+    await connection.rollback();
+    throw error;
+  } finally {
+    connection.release();
+  }
+}
+
 export async function updateAcademicPeriod(
   id: number,
   input: UpdateAcademicPeriodInput,

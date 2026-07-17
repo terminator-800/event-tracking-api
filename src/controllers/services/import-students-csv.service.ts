@@ -484,21 +484,27 @@ async function upsertEnrollment(
   studentId: number,
   programId: number,
   schoolYear: string,
-  academicPeriodId: number | null,
+  academicPeriodId: number,
   effectiveSemester: string,
 ): Promise<"inserted" | "updated"> {
+  // Period-scoped snapshot: update only this semester's enrollment; never touch other periods.
   const [existingKey] = await connection.execute<RowDataPacket[]>(
-    "SELECT id FROM enrollments WHERE student_id = ? AND program_id = ? AND school_year = ? AND semester = ? LIMIT 1",
-    [studentId, programId, schoolYear, effectiveSemester],
+    `SELECT id FROM enrollments
+     WHERE student_id = ? AND academic_period_id = ?
+     LIMIT 1`,
+    [studentId, academicPeriodId],
   );
 
   if (existingKey.length > 0) {
-    if (row.yearLevel != null || academicPeriodId != null) {
-      await connection.execute(
-        "UPDATE enrollments SET year_level = COALESCE(?, year_level), academic_period_id = COALESCE(?, academic_period_id) WHERE id = ?",
-        [row.yearLevel, academicPeriodId, Number(existingKey[0].id)],
-      );
-    }
+    await connection.execute(
+      `UPDATE enrollments
+       SET program_id = ?,
+           school_year = ?,
+           semester = ?,
+           year_level = COALESCE(?, year_level)
+       WHERE id = ?`,
+      [programId, schoolYear, effectiveSemester, row.yearLevel, Number(existingKey[0].id)],
+    );
     return "updated";
   }
 
@@ -514,7 +520,7 @@ async function linkStudentDepartment(
   row: CsvRow,
   studentPk: number,
   inserted: ImportCounts,
-  activePeriod: AcademicPeriodRow | null,
+  activePeriod: AcademicPeriodRow,
 ): Promise<void> {
   if (!row.hasEnrollmentFields && !row.hasDepartmentOnly) return;
 
@@ -526,30 +532,26 @@ async function linkStudentDepartment(
     : await getOrCreatePlaceholderProgram(connection, dept.id);
   if (program.inserted) inserted.programs += 1;
 
-  let schoolYear = row.schoolYear?.trim() || DEPARTMENT_ONLY_SCHOOL_YEAR;
-  let semester = row.semester;
-  const academicPeriodId = activePeriod?.id ?? null;
-
-  if (activePeriod) {
-    if (row.hasEnrollmentFields && row.schoolYear?.trim()) {
-      const csvSchoolYear = normalizeSchoolYear(row.schoolYear);
-      if (csvSchoolYear && csvSchoolYear !== activePeriod.school_year) {
-        throw new Error(
-          `School year "${row.schoolYear}" does not match the active period (${activePeriod.school_year}).`,
-        );
-      }
+  if (row.hasEnrollmentFields && row.schoolYear?.trim()) {
+    const csvSchoolYear = normalizeSchoolYear(row.schoolYear);
+    if (csvSchoolYear && csvSchoolYear !== activePeriod.school_year) {
+      throw new Error(
+        `School year "${row.schoolYear}" does not match the active period (${activePeriod.school_year}).`,
+      );
     }
-    if (row.hasEnrollmentFields && row.semester?.trim()) {
-      const csvSemester = normalizeSemester(row.semester);
-      if (csvSemester && csvSemester !== activePeriod.semester) {
-        throw new Error(
-          `Semester "${row.semester}" does not match the active period (${activePeriod.semester}).`,
-        );
-      }
-    }
-    schoolYear = activePeriod.school_year;
-    semester = activePeriod.semester;
   }
+  if (row.hasEnrollmentFields && row.semester?.trim()) {
+    const csvSemester = normalizeSemester(row.semester);
+    if (csvSemester && csvSemester !== activePeriod.semester) {
+      throw new Error(
+        `Semester "${row.semester}" does not match the active period (${activePeriod.semester}).`,
+      );
+    }
+  }
+
+  const schoolYear = activePeriod.school_year;
+  const semester = activePeriod.semester;
+  const academicPeriodId = activePeriod.id;
 
   const enrollmentState = await upsertEnrollment(
     connection,

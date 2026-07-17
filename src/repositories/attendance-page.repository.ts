@@ -31,7 +31,7 @@ export interface ScopedEventRow extends RowDataPacket {
   audiences: string | null;
 }
 
-export const ADMIN_ROLES: Role[] = ["admin", "csg_president"];
+export const ADMIN_ROLES: Role[] = ["admin", "super_admin", "csg_president"];
 
 /** `null` = institution-wide roster (admins/president). Otherwise restrict to programs in this department. */
 export type AttendanceRosterDepartmentScope = number | null;
@@ -72,7 +72,7 @@ function parseAudienceEntries(raw: unknown): Array<{ department_id?: unknown }> 
 
 export async function selectScopedEvents(userRole: Role, userId: number): Promise<ScopedEventRow[]> {
   const activePeriod = await getActiveAcademicPeriod();
-  const periodClause = activePeriod ? sqlActivePeriodEventsClause("e") : "";
+  const periodClause = activePeriod ? sqlActivePeriodEventsClause("e") : " AND 1=0";
   const periodParams = activePeriod ? [activePeriod.id] : [];
   const audienceAggSql = `JSON_ARRAYAGG(
           JSON_OBJECT(
@@ -87,7 +87,7 @@ export async function selectScopedEvents(userRole: Role, userId: number): Promis
           )
         ) AS audiences`;
 
-  if (userRole === "admin") {
+  if (userRole === "admin" || userRole === "super_admin") {
     const [rows] = await pool.execute<ScopedEventRow[]>(
       `SELECT
         e.*,

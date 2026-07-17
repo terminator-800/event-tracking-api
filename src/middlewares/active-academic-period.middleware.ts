@@ -10,17 +10,15 @@ declare global {
   }
 }
 
-/** Operational roles must have an active academic period before writes. Super admin is exempt. */
+/**
+ * Operational writes require an active school year + semester.
+ * Attaches `req.activeAcademicPeriod` for automatic stamping.
+ */
 export async function requireActiveAcademicPeriod(
   req: Request,
   res: Response,
   next: NextFunction,
 ): Promise<void> {
-  if (req.user?.role === "super_admin") {
-    next();
-    return;
-  }
-
   const active = await getActiveAcademicPeriod();
   if (!active) {
     res.status(403).json({

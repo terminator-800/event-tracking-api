@@ -2,6 +2,7 @@ import { Request, Response } from "express";
 import {
   activateAcademicPeriod,
   createAcademicPeriod,
+  createAcademicYearPeriods,
   deleteAcademicPeriod,
   getActiveAcademicPeriod,
   listAcademicPeriods,
@@ -35,7 +36,34 @@ export class AcademicPeriodController {
 
   async create(req: Request, res: Response): Promise<void> {
     try {
-      const { schoolYear, school_year, semester, label, startsOn, starts_on, endsOn, ends_on } = req.body ?? {};
+      const {
+        schoolYear,
+        school_year,
+        semester,
+        label,
+        startsOn,
+        starts_on,
+        endsOn,
+        ends_on,
+        autoCreateSecondSemester,
+      } = req.body ?? {};
+
+      if (autoCreateSecondSemester === true) {
+        const result = await createAcademicYearPeriods(
+          schoolYear ?? school_year,
+          req.user?.id ?? null,
+        );
+        if (!result.success) {
+          res.status(result.status).json({ message: result.message });
+          return;
+        }
+        res.status(result.status).json({
+          message: "First and second semester periods created.",
+          periods: result.data?.periods,
+        });
+        return;
+      }
+
       const result = await createAcademicPeriod({
         schoolYear: schoolYear ?? school_year,
         semester,

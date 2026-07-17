@@ -18,8 +18,14 @@ export function sqlLatestEnrollmentLeftJoin(activePeriodId: number | null | unde
   return SQL_LATEST_ENROLLMENT_LEFT_JOIN;
 }
 
+/** Strict filter: only records belonging to the given academic period. */
 export function sqlActivePeriodEventsClause(alias = "e"): string {
-  return ` AND (${alias}.academic_period_id = ? OR ${alias}.academic_period_id IS NULL)`;
+  return ` AND ${alias}.academic_period_id = ?`;
+}
+
+/** When no period is active, operational lists should return nothing. */
+export function sqlNoActivePeriodEventsClause(): string {
+  return ` AND 1=0`;
 }
 
 export const SQL_LATEST_PROGRAM_LEFT_JOIN = `LEFT JOIN programs p ON p.id = en.program_id`;
@@ -62,14 +68,23 @@ export function buildEligibleStudentsQuery(
     ${enrollmentJoin}
     ${SQL_LATEST_PROGRAM_LEFT_JOIN}`;
 
+  // All-department events still use the active-semester enrollment roster.
+  const enrolledOnly =
+    activePeriodId != null && Number.isFinite(Number(activePeriodId))
+      ? "en.id IS NOT NULL"
+      : "1=1";
+
   if (isAllDepartments) {
     if (audienceYearLevel != null) {
       return {
-        sql: `${base} WHERE ${SQL_STUDENT_YEAR_LEVEL} = ?`,
+        sql: `${base} WHERE ${enrolledOnly} AND ${SQL_STUDENT_YEAR_LEVEL} = ?`,
         params: [audienceYearLevel],
       };
     }
-    return { sql: base, params: [] };
+    return {
+      sql: `${base} WHERE ${enrolledOnly}`,
+      params: [],
+    };
   }
 
   return {

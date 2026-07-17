@@ -1,6 +1,8 @@
 import { RowDataPacket } from "mysql2";
 import { pool } from "../config/db";
 import { SQL_STUDENT_FULL_NAME, SQL_STUDENT_YEAR_LEVEL } from "../utils/studentDisplaySql";
+import { sqlLatestEnrollmentLeftJoin } from "../utils/studentEligibilitySql";
+import { getActiveAcademicPeriod } from "./academic-periods.repository";
 
 export interface StudentListRow extends RowDataPacket {
   student_pk: number;
@@ -16,16 +18,22 @@ export interface StudentListRow extends RowDataPacket {
 }
 
 /** Latest enrollment per student + program + stats vs completed eligible events.
- * When {@link createdByUserId} is set, only counts events that user created (`events.created_by`). */
+ * When {@link createdByUserId} is set, only counts events that user created (`events.created_by`).
+ * Scoped to the active academic period roster and events. */
 export async function findStudentsWithAttendanceStats(
   departmentId: number | null,
   createdByUserId: number | null = null,
 ): Promise<StudentListRow[]> {
-  const deptClause = departmentId == null ? "1=1" : "p.department_id = ?";
+  const activePeriod = await getActiveAcademicPeriod();
+  const academicPeriodId = activePeriod?.id ?? null;
+  if (academicPeriodId == null) return [];
+
+  const deptClause = departmentId == null ? "en.id IS NOT NULL" : "en.id IS NOT NULL AND p.department_id = ?";
   const eventCreatorClause =
     createdByUserId != null ? " AND ev.created_by = ? " : "";
+  const enrollmentJoin = sqlLatestEnrollmentLeftJoin(academicPeriodId);
 
-  const params: (string | number)[] = [];
+  const params: (string | number)[] = [academicPeriodId];
   if (createdByUserId != null) params.push(createdByUserId);
   if (departmentId != null) params.push(departmentId);
 
@@ -181,19 +189,18 @@ export async function findStudentsWithAttendanceStats(
         THEN ev.id
       END) AS events_attended
     FROM students s
-    LEFT JOIN enrollments en ON en.id = (
-      SELECT e2.id FROM enrollments e2 WHERE e2.student_id = s.id ORDER BY e2.id DESC LIMIT 1
-    )
+    ${enrollmentJoin}
     LEFT JOIN programs p ON p.id = en.program_id
     LEFT JOIN departments d ON d.id = p.department_id
     LEFT JOIN events ev ON ev.status = 'Completed'
+      AND ev.academic_period_id = ?
       ${eventCreatorClause}
     LEFT JOIN attendance att ON att.event_id = ev.id AND att.student_id = s.id
     WHERE ${deptClause}
     GROUP BY s.id, s.student_id, s.full_name, s.first_name, s.middle_name, s.last_name, s.year_level, p.course_code, p.major, p.department_id, d.name, en.id, en.year_level
     ORDER BY full_name ASC
     `,
-    params.length ? params : undefined,
+    params,
   );
   return rows;
 }
@@ -217,12 +224,17 @@ export async function findCompletedEventsForStudent(
   enrollmentYearLevel: number,
   createdByUserId: number | null = null,
 ): Promise<EventHistoryDbRow[]> {
+  const activePeriod = await getActiveAcademicPeriod();
+  const academicPeriodId = activePeriod?.id ?? null;
+  if (academicPeriodId == null) return [];
+
   const creatorClause =
     createdByUserId != null ? " AND ev.created_by = ? " : "";
 
   const params: (string | number | null)[] = [studentPk, studentPk];
   if (createdByUserId != null) params.push(createdByUserId);
   params.push(
+    academicPeriodId,
     enrollmentYearLevel,
     studentPk,
     studentPk,
@@ -260,6 +272,7 @@ export async function findCompletedEventsForStudent(
     LEFT JOIN attendance att ON att.event_id = ev.id AND att.student_id = ?
     WHERE ev.status = 'Completed'
       ${creatorClause}
+      AND ev.academic_period_id = ?
       AND (
         (ev.is_all_departments = 1 AND (
           NOT EXISTS (
@@ -343,6 +356,10 @@ export async function findStudentEnrollmentContext(studentPk: number): Promise<{
   full_name: string;
   department_name: string | null;
 } | null> {
+  const activePeriod = await getActiveAcademicPeriod();
+  const academicPeriodId = activePeriod?.id ?? null;
+  const enrollmentJoin = sqlLatestEnrollmentLeftJoin(academicPeriodId);
+
   const [rows] = await pool.execute<RowDataPacket[]>(
     `
     SELECT
@@ -353,12 +370,11 @@ export async function findStudentEnrollmentContext(studentPk: number): Promise<{
       d.name AS department_name,
       ${SQL_STUDENT_FULL_NAME} AS full_name
     FROM students s
-    LEFT JOIN enrollments en ON en.id = (
-      SELECT e2.id FROM enrollments e2 WHERE e2.student_id = s.id ORDER BY e2.id DESC LIMIT 1
-    )
+    ${enrollmentJoin}
     LEFT JOIN programs p ON p.id = en.program_id
     LEFT JOIN departments d ON d.id = p.department_id
     WHERE s.id = ?
+      AND en.id IS NOT NULL
     LIMIT 1
     `,
     [studentPk],

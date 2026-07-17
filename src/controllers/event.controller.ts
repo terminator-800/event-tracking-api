@@ -325,6 +325,13 @@ async createEvent(req: Request, res: Response): Promise<void> {
 
   const connection = await pool.getConnection();
   const academicPeriodId = req.activeAcademicPeriod?.id ?? null;
+  if (academicPeriodId == null) {
+    res.status(403).json({
+      message:
+        "No active school year and semester. Activate an academic period before creating events.",
+    });
+    return;
+  }
 
   try {
     await connection.beginTransaction();
@@ -595,7 +602,9 @@ if (!userId) {
 try {
   let events: any[] = [];
   const activePeriod = await getActiveAcademicPeriod();
-  const periodClause = activePeriod ? sqlActivePeriodEventsClause("e") : "";
+  const periodClause = activePeriod
+    ? sqlActivePeriodEventsClause("e")
+    : " AND 1=0";
   const periodParams = activePeriod ? [activePeriod.id] : [];
 
   if (userRole === "admin" || userRole === "super_admin") {
@@ -715,8 +724,11 @@ async getCurrentEvent(req: Request, res: Response): Promise<void> {
     const userId = req.user?.id;
     const departmentId = req.user?.department_id ?? null;
     const role = req.user?.role ?? null;
+    const activePeriod = await getActiveAcademicPeriod();
+    const periodClause = activePeriod ? sqlActivePeriodEventsClause("e") : " AND 1=0";
+    const periodParams = activePeriod ? [activePeriod.id] : [];
 
-    console.log("[getCurrentEvent] user:", { role, departmentId });
+    console.log("[getCurrentEvent] user:", { role, departmentId, activePeriodId: activePeriod?.id ?? null });
 
     if (role === "csg_president" && userId) {
       const [rows]: any = await pool.execute(
@@ -742,9 +754,10 @@ async getCurrentEvent(req: Request, res: Response): Promise<void> {
         LEFT JOIN programs p         ON p.id = ea.program_id
         WHERE e.created_by = ?
         AND e.status IN ('Upcoming', 'Ongoing')
+        ${periodClause}
         GROUP BY e.id
         ORDER BY e.date ASC`,
-        [userId]
+        [userId, ...periodParams]
       );
       res.status(200).json({ events: sanitizeEventRows(rows) });
       return;
@@ -783,11 +796,12 @@ async getCurrentEvent(req: Request, res: Response): Promise<void> {
           WHERE (e.is_all_departments = 1 OR ea.department_id = ?)
           AND e.status IN ('Upcoming', 'Ongoing')
           ${creatorSql}
+          ${periodClause}
           GROUP BY e.id
           ORDER BY e.date ASC`,
           filterByCreator
-            ? [departmentId, departmentId, userId]
-            : [departmentId, departmentId]
+            ? [departmentId, departmentId, userId, ...periodParams]
+            : [departmentId, departmentId, ...periodParams]
         );
 
         res.status(200).json({ events: sanitizeEventRows(rows) });
@@ -822,6 +836,7 @@ async getCurrentEvent(req: Request, res: Response): Promise<void> {
             LEFT JOIN programs p         ON p.id = ea.program_id
             WHERE e.is_all_departments = 1
               AND e.status IN ('Upcoming', 'Ongoing')
+              ${periodClause}
             GROUP BY e.id
           )
           UNION ALL
@@ -850,11 +865,12 @@ async getCurrentEvent(req: Request, res: Response): Promise<void> {
             WHERE creator.role IN (${govPlaceholders})
               AND e.is_all_departments = 0
               AND e.status IN ('Upcoming', 'Ongoing')
+              ${periodClause}
             GROUP BY e.id
           )
         ) AS public_events
         ORDER BY date ASC`,
-        [...GOVERNOR_ROLES]
+        [...periodParams, ...GOVERNOR_ROLES, ...periodParams]
       );
       console.log("get current events:", rows.length);
 

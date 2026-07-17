@@ -149,6 +149,7 @@ export class PaymentController {
         amountPaid,
         paymentMethod,
         remarks,
+        academicPeriodId: req.activeAcademicPeriod?.id ?? null,
       });
       if (!result.ok) {
         res.status(result.status).json({ message: result.message });
@@ -209,6 +210,7 @@ export class PaymentController {
         userId,
         publicStudentId: studentId,
         targetBalance,
+        academicPeriodId: req.activeAcademicPeriod?.id ?? null,
       });
       if (!result.ok) {
         res.status(result.status).json({ message: result.message });
