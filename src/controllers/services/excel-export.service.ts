@@ -11,6 +11,9 @@ import {
   selectStudentsForEventDetail,
   EventStudentRow,
 } from "../../repositories/attendance-page.repository";
+import { SQL_STUDENT_FULL_NAME } from "../../utils/studentDisplaySql";
+import { parseTimeCellToSql, sqlTimeTo12Hour } from "../../utils/sqlTime";
+import { clampMoney } from "../../utils/paymentStatus";
 
 // ── Colours (NMCI brand) ──────────────────────────────────────────────────────
 const GREEN = "07713C";
@@ -92,31 +95,82 @@ async function getEventById(eventId: number): Promise<EventDbRow | null> {
 }
 
 async function getEventPayments(eventId: number): Promise<RowDataPacket[]> {
+  // One row per student for this event.
+  // Balance = remaining fine for the event (same as Payments desk "Remaining Fine"):
+  //   SUM(GREATEST(amount - paid_amount, 0))
   const [rows] = await pool.execute<RowDataPacket[]>(
     `SELECT
        s.student_id,
-       COALESCE(
-         TRIM(CONCAT(COALESCE(s.first_name,''),' ',COALESCE(s.middle_name,''),' ',COALESCE(s.last_name,''))),
-         s.full_name,
-         ''
-       ) AS student_name,
-       f.reason       AS fine_reason,
-       f.amount       AS fine_amount,
-       f.paid_amount,
-       f.status       AS fine_status,
-       pay.receipt_no,
-       pay.amount_paid,
-       pay.payment_method,
-       pay.remarks,
-       pay.paid_at
+       ${SQL_STUDENT_FULL_NAME} AS student_name,
+       GROUP_CONCAT(DISTINCT f.reason ORDER BY f.id SEPARATOR ', ') AS fine_reason,
+       COALESCE(SUM(f.amount), 0) AS fine_amount,
+       COALESCE(SUM(f.paid_amount), 0) AS paid_amount,
+       COALESCE(SUM(GREATEST(f.amount - f.paid_amount, 0)), 0) AS balance,
+       CASE
+         WHEN SUM(CASE WHEN f.status = 'Waived' THEN 0 ELSE 1 END) = 0 THEN 'Waived'
+         WHEN SUM(GREATEST(f.amount - f.paid_amount, 0)) <= 0 THEN 'Paid'
+         WHEN SUM(f.paid_amount) > 0 THEN 'Partial'
+         ELSE 'Unpaid'
+       END AS fine_status,
+       (
+         SELECT COALESCE(
+           NULLIF(TRIM(pt.transaction_code), ''),
+           NULLIF(TRIM(pay.receipt_no), '')
+         )
+         FROM payments pay
+         LEFT JOIN payment_transactions pt ON pt.id = pay.transaction_id
+         WHERE pay.fine_id IN (
+           SELECT f2.id FROM fines f2 WHERE f2.event_id = ? AND f2.student_id = s.id
+         )
+         ORDER BY COALESCE(pt.paid_at, pay.paid_at) DESC, pay.id DESC
+         LIMIT 1
+       ) AS receipt_no,
+       (
+         SELECT COALESCE(NULLIF(TRIM(pt.remarks), ''), NULLIF(TRIM(pay.remarks), ''))
+         FROM payments pay
+         LEFT JOIN payment_transactions pt ON pt.id = pay.transaction_id
+         WHERE pay.fine_id IN (
+           SELECT f2.id FROM fines f2 WHERE f2.event_id = ? AND f2.student_id = s.id
+         )
+         ORDER BY COALESCE(pt.paid_at, pay.paid_at) DESC, pay.id DESC
+         LIMIT 1
+       ) AS remarks,
+       (
+         SELECT COALESCE(pt.paid_at, pay.paid_at)
+         FROM payments pay
+         LEFT JOIN payment_transactions pt ON pt.id = pay.transaction_id
+         WHERE pay.fine_id IN (
+           SELECT f2.id FROM fines f2 WHERE f2.event_id = ? AND f2.student_id = s.id
+         )
+         ORDER BY COALESCE(pt.paid_at, pay.paid_at) DESC, pay.id DESC
+         LIMIT 1
+       ) AS paid_at
      FROM fines f
      JOIN students s ON s.id = f.student_id
-     LEFT JOIN payments pay ON pay.fine_id = f.id
      WHERE f.event_id = ?
-     ORDER BY student_name, f.reason`,
-    [eventId],
+     GROUP BY s.id, s.student_id, s.full_name, s.first_name, s.middle_name, s.last_name
+     ORDER BY student_name`,
+    [eventId, eventId, eventId, eventId],
   );
   return rows;
+}
+
+function formatPaidAt(paidAt: unknown): string {
+  if (paidAt == null || paidAt === "") return "";
+  const raw = String(paidAt).trim();
+  if (!raw) return "";
+  // dateStrings: true → "YYYY-MM-DD HH:MM:SS"
+  const normalized = raw.includes("T") ? raw : raw.replace(" ", "T");
+  const withTz = /[zZ]|[+-]\d{2}:?\d{2}$/.test(normalized)
+    ? normalized
+    : `${normalized}+08:00`;
+  const d = new Date(withTz);
+  if (Number.isNaN(d.getTime())) return raw;
+  return d.toLocaleString("en-PH", { timeZone: "Asia/Manila" });
+}
+
+function formatExportTime(t: string | null | undefined): string {
+  return sqlTimeTo12Hour(t) ?? "";
 }
 
 interface DeptInfo {
@@ -251,10 +305,10 @@ export async function generateEventExcel(
     ["Duration", event.duration],
     ["Fine Per Absence (PHP)", Number(event.fine_amount ?? 0)],
     ["All Departments", Number(event.is_all_departments) === 1 ? "Yes" : "No"],
-    ["AM Time In", event.am_time_in ?? "—"],
-    ["AM Time Out", event.am_time_out ?? "—"],
-    ["PM Time In", event.pm_time_in ?? "—"],
-    ["PM Time Out", event.pm_time_out ?? "—"],
+    ["AM Time In", formatExportTime(event.am_time_in) || "—"],
+    ["AM Time Out", formatExportTime(event.am_time_out) || "—"],
+    ["PM Time In", formatExportTime(event.pm_time_in) || "—"],
+    ["PM Time Out", formatExportTime(event.pm_time_out) || "—"],
     ["Description", (event.audience_notes as string | undefined | null) ?? "—"],
     ["Created By", event.created_by_username],
     ["Exported By", username],
@@ -281,8 +335,6 @@ export async function generateEventExcel(
     "Student ID",
     "Full Name",
     "Department",
-    "Course",
-    "Major",
     "Year Level",
     "Attendance",
     "AM Time In",
@@ -291,7 +343,7 @@ export async function generateEventExcel(
     "PM Time Out",
     "Fine (PHP)",
   ];
-  const attWidths = [14, 28, 24, 12, 14, 12, 12, 14, 14, 14, 14, 12];
+  const attWidths = [14, 28, 24, 12, 12, 14, 14, 14, 14, 12];
 
   attHeaders.forEach((h, ci) => styleHeader(attSheet.cell(1, ci + 1).value(h)));
   attWidths.forEach((w, ci) => attSheet.column(ci + 1).width(w));
@@ -310,16 +362,14 @@ export async function generateEventExcel(
     attSheet.cell(ri, 1).value(s.student_id ?? "");
     attSheet.cell(ri, 2).value(s.full_name ?? "");
     attSheet.cell(ri, 3).value(s.department_name ?? "");
-    attSheet.cell(ri, 4).value(s.course_code ?? "");
-    attSheet.cell(ri, 5).value(s.major ?? "");
-    attSheet.cell(ri, 6).value(ylNum);
-    attSheet.cell(ri, 7).value(attended ? "Attended" : "Absent");
-    attSheet.cell(ri, 8).value(s.am_time_in ?? "");
-    attSheet.cell(ri, 9).value(s.am_time_out ?? "");
-    attSheet.cell(ri, 10).value(s.pm_time_in ?? "");
-    attSheet.cell(ri, 11).value(s.pm_time_out ?? "");
-    attSheet.cell(ri, 12).value(Number(s.fine_total ?? 0));
-    styleAltRow(attSheet, ri, 12);
+    attSheet.cell(ri, 4).value(ylNum);
+    attSheet.cell(ri, 5).value(attended ? "Attended" : "Absent");
+    attSheet.cell(ri, 6).value(formatExportTime(s.am_time_in));
+    attSheet.cell(ri, 7).value(formatExportTime(s.am_time_out));
+    attSheet.cell(ri, 8).value(formatExportTime(s.pm_time_in));
+    attSheet.cell(ri, 9).value(formatExportTime(s.pm_time_out));
+    attSheet.cell(ri, 10).value(Number(s.fine_total ?? 0));
+    styleAltRow(attSheet, ri, 10);
   });
 
   // ── Sheet 3: Attendance Summary ──────────────────────────────────────────
@@ -329,11 +379,15 @@ export async function generateEventExcel(
       ? ((attendedCount / students.length) * 100).toFixed(1)
       : "0.0";
   const totalFinesAmt = payments.reduce(
-    (sum, p) => sum + Number(p.fine_amount ?? 0),
+    (sum, p) => sum + clampMoney(Number(p.fine_amount ?? 0)),
     0,
   );
   const totalPaid = payments.reduce(
-    (sum, p) => sum + Number(p.paid_amount ?? 0),
+    (sum, p) => sum + clampMoney(Number(p.paid_amount ?? 0)),
+    0,
+  );
+  const totalUnpaid = payments.reduce(
+    (sum, p) => sum + clampMoney(Number(p.balance ?? 0)),
     0,
   );
 
@@ -346,7 +400,7 @@ export async function generateEventExcel(
     ["Attendance Rate", `${attendanceRate}%`],
     ["Total Fines Generated (PHP)", totalFinesAmt],
     ["Total Paid (PHP)", totalPaid],
-    ["Total Unpaid (PHP)", Math.max(0, totalFinesAmt - totalPaid)],
+    ["Total Unpaid (PHP)", totalUnpaid],
   ];
   summRows.forEach(([k, v], i) => {
     summSheet.cell(i + 1, 1).value(k);
@@ -367,14 +421,13 @@ export async function generateEventExcel(
     "Fine Reason",
     "Fine Amount",
     "Amount Paid",
-    "Balance",
+    "Remaining Balance",
     "Fine Status",
     "Receipt No",
-    "Payment Method",
     "Remarks",
     "Paid At",
   ];
-  const payWidths = [14, 26, 20, 13, 13, 12, 12, 16, 18, 22, 20];
+  const payWidths = [14, 26, 20, 13, 13, 12, 12, 18, 22, 20];
 
   payHeaders.forEach((h, ci) => styleHeader(paySheet.cell(1, ci + 1).value(h)));
   payWidths.forEach((w, ci) => paySheet.column(ci + 1).width(w));
@@ -384,22 +437,24 @@ export async function generateEventExcel(
   } else {
     payments.forEach((p, pi) => {
       const ri = pi + 2;
-      const fineAmt = Number(p.fine_amount ?? 0);
-      const paidAmt = Number(p.paid_amount ?? 0);
+      const fineAmt = clampMoney(Number(p.fine_amount ?? 0));
+      const paidAmt = clampMoney(Number(p.paid_amount ?? 0));
+      // Prefer SQL balance (event remaining fine); fall back to fine - paid.
+      const balance = clampMoney(
+        p.balance != null ? Number(p.balance) : Math.max(0, fineAmt - paidAmt),
+      );
+      const status = String(p.fine_status ?? "");
       paySheet.cell(ri, 1).value(String(p.student_id ?? ""));
       paySheet.cell(ri, 2).value(String(p.student_name ?? ""));
       paySheet.cell(ri, 3).value(String(p.fine_reason ?? ""));
       paySheet.cell(ri, 4).value(fineAmt);
-      paySheet.cell(ri, 5).value(Number(p.amount_paid ?? 0));
-      paySheet.cell(ri, 6).value(Math.max(0, fineAmt - paidAmt));
-      paySheet.cell(ri, 7).value(String(p.fine_status ?? ""));
+      paySheet.cell(ri, 5).value(paidAmt);
+      paySheet.cell(ri, 6).value(balance);
+      paySheet.cell(ri, 7).value(status);
       paySheet.cell(ri, 8).value(String(p.receipt_no ?? ""));
-      paySheet.cell(ri, 9).value(String(p.payment_method ?? ""));
-      paySheet.cell(ri, 10).value(String(p.remarks ?? ""));
-      paySheet.cell(ri, 11).value(
-        p.paid_at ? new Date(p.paid_at as string).toLocaleString("en-PH") : "",
-      );
-      styleAltRow(paySheet, ri, 11);
+      paySheet.cell(ri, 9).value(String(p.remarks ?? ""));
+      paySheet.cell(ri, 10).value(formatPaidAt(p.paid_at));
+      styleAltRow(paySheet, ri, 10);
     });
   }
 
@@ -412,7 +467,7 @@ export async function generateEventExcel(
   const sysRows: [string, string][] = [
     ["Key", "Value"],
     ["SYSTEM", "NMCI-EVENT-TRACKING"],
-    ["VERSION", "2"],
+    ["VERSION", "3"],
     ["EVENT_ID", String(event.id)],
     ["EVENT_NAME", event.name],
     ["EVENT_DATE", eventDate],
@@ -590,6 +645,126 @@ function readSysSheet(sysSheet: any): Map<string, string> {
   return data;
 }
 
+function normalizeHeader(val: unknown): string {
+  return String(val ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, " ");
+}
+
+/** Resolve Attendance sheet columns for v2 (with Course/Major) and v3+ layouts. */
+function resolveAttendanceColumns(attSheet: any): {
+  studentId: number;
+  fullName: number;
+  yearLevel: number;
+  attendance: number;
+  amIn: number;
+  amOut: number;
+  pmIn: number;
+  pmOut: number;
+} {
+  const headers: string[] = [];
+  for (let c = 1; c <= 16; c++) {
+    headers[c] = normalizeHeader(attSheet.cell(1, c).value());
+  }
+  const find = (...names: string[]) => {
+    for (let c = 1; c < headers.length; c++) {
+      if (names.includes(headers[c])) return c;
+    }
+    return -1;
+  };
+
+  const studentId = find("student id");
+  const fullName = find("full name", "student", "student name");
+  const yearLevel = find("year level", "year");
+  const attendance = find("attendance", "status");
+  const amIn = find("am time in");
+  const amOut = find("am time out");
+  const pmIn = find("pm time in");
+  const pmOut = find("pm time out");
+
+  // Prefer header map; fall back by whether Course/Major columns exist (v2 vs v3).
+  if (studentId > 0 && attendance > 0 && amIn > 0) {
+    return {
+      studentId,
+      fullName: fullName > 0 ? fullName : 2,
+      yearLevel: yearLevel > 0 ? yearLevel : 4,
+      attendance,
+      amIn,
+      amOut: amOut > 0 ? amOut : amIn + 1,
+      pmIn: pmIn > 0 ? pmIn : amIn + 2,
+      pmOut: pmOut > 0 ? pmOut : amIn + 3,
+    };
+  }
+
+  const hasCourse = find("course") > 0;
+  if (hasCourse) {
+    return { studentId: 1, fullName: 2, yearLevel: 6, attendance: 7, amIn: 8, amOut: 9, pmIn: 10, pmOut: 11 };
+  }
+  return { studentId: 1, fullName: 2, yearLevel: 4, attendance: 5, amIn: 6, amOut: 7, pmIn: 8, pmOut: 9 };
+}
+
+/** Resolve Payments sheet columns for layouts with/without Payment Method. */
+function resolvePaymentColumns(paySheet: any): {
+  studentId: number;
+  fineReason: number;
+  fineAmount: number;
+  amountPaid: number;
+  fineStatus: number;
+  receiptNo: number;
+  paymentMethod: number;
+  remarks: number;
+  paidAt: number;
+} {
+  const headers: string[] = [];
+  for (let c = 1; c <= 16; c++) {
+    headers[c] = normalizeHeader(paySheet.cell(1, c).value());
+  }
+  const find = (...names: string[]) => {
+    for (let c = 1; c < headers.length; c++) {
+      if (names.includes(headers[c])) return c;
+    }
+    return -1;
+  };
+
+  const studentId = find("student id");
+  const fineReason = find("fine reason", "reason");
+  const fineAmount = find("fine amount");
+  const amountPaid = find("amount paid", "paid amount");
+  const fineStatus = find("fine status", "status");
+  const receiptNo = find("receipt no", "receipt no.", "receipt number", "transaction code");
+  const paymentMethod = find("payment method");
+  const remarks = find("remarks", "note", "notes");
+  const paidAt = find("paid at", "paid date", "date paid");
+
+  if (studentId > 0 && fineReason > 0) {
+    return {
+      studentId,
+      fineReason,
+      fineAmount: fineAmount > 0 ? fineAmount : 4,
+      amountPaid: amountPaid > 0 ? amountPaid : 5,
+      fineStatus: fineStatus > 0 ? fineStatus : 7,
+      receiptNo: receiptNo > 0 ? receiptNo : 8,
+      paymentMethod,
+      remarks: remarks > 0 ? remarks : paymentMethod > 0 ? 10 : 9,
+      paidAt: paidAt > 0 ? paidAt : paymentMethod > 0 ? 11 : 10,
+    };
+  }
+
+  // Legacy fixed layout (with Payment Method).
+  return {
+    studentId: 1,
+    fineReason: 3,
+    fineAmount: 4,
+    amountPaid: 5,
+    fineStatus: 7,
+    receiptNo: 8,
+    paymentMethod: 9,
+    remarks: 10,
+    paidAt: 11,
+  };
+}
+
 // ── Excel import + validation ─────────────────────────────────────────────────
 
 export interface ImportPreview {
@@ -722,8 +897,9 @@ export async function previewImportExcel(
       if (usedRange) {
         const lastRow = usedRange.endCell().rowNumber();
         studentCount = Math.max(0, lastRow - 1);
+        const attCols = resolveAttendanceColumns(attSheet);
         for (let r = 2; r <= lastRow; r++) {
-          const attVal = String(attSheet.cell(r, 7).value() ?? "").trim();
+          const attVal = String(attSheet.cell(r, attCols.attendance).value() ?? "").trim();
           if (attVal === "Attended") attendanceCount++;
         }
       }
@@ -863,12 +1039,13 @@ export async function importEventExcel(
     };
   }
   const lastRow = usedRange.endCell().rowNumber();
+  const attCols = resolveAttendanceColumns(attSheet);
 
   let created = 0;
   let skipped = 0;
 
   for (let ri = 2; ri <= lastRow; ri++) {
-    const studentIdVal = String(attSheet.cell(ri, 1).value() ?? "").trim();
+    const studentIdVal = String(attSheet.cell(ri, attCols.studentId).value() ?? "").trim();
     if (!studentIdVal) continue;
 
     const [stRows] = await pool.execute<RowDataPacket[]>(
@@ -890,10 +1067,10 @@ export async function importEventExcel(
       continue;
     }
 
-    const amIn = String(attSheet.cell(ri, 8).value() ?? "").trim() || null;
-    const amOut = String(attSheet.cell(ri, 9).value() ?? "").trim() || null;
-    const pmIn = String(attSheet.cell(ri, 10).value() ?? "").trim() || null;
-    const pmOut = String(attSheet.cell(ri, 11).value() ?? "").trim() || null;
+    const amIn = parseTimeCellToSql(attSheet.cell(ri, attCols.amIn).value());
+    const amOut = parseTimeCellToSql(attSheet.cell(ri, attCols.amOut).value());
+    const pmIn = parseTimeCellToSql(attSheet.cell(ri, attCols.pmIn).value());
+    const pmOut = parseTimeCellToSql(attSheet.cell(ri, attCols.pmOut).value());
 
     if (!amIn && !amOut && !pmIn && !pmOut) {
       skipped++;
@@ -1105,16 +1282,13 @@ export async function importEventFull(
   const fineAmountVal = Number(readInfo("Fine Per Absence (PHP)")) || 0;
   const isAllDepts = readInfo("All Departments") === "Yes" ? 1 : 0;
 
-  const parseTimeField = (val: string): string | null => {
-    const v = val.trim();
-    return v && v !== "—" ? v : null;
-  };
-
-  const amTimeIn = parseTimeField(readInfo("AM Time In"));
-  const amTimeOut = parseTimeField(readInfo("AM Time Out"));
-  const pmTimeIn = parseTimeField(readInfo("PM Time In"));
-  const pmTimeOut = parseTimeField(readInfo("PM Time Out"));
-  const audienceNotes = parseTimeField(readInfo("Description"));
+  const amTimeIn = parseTimeCellToSql(readInfo("AM Time In"));
+  const amTimeOut = parseTimeCellToSql(readInfo("AM Time Out"));
+  const pmTimeIn = parseTimeCellToSql(readInfo("PM Time In"));
+  const pmTimeOut = parseTimeCellToSql(readInfo("PM Time Out"));
+  const audienceNotesRaw = readInfo("Description").trim();
+  const audienceNotes =
+    audienceNotesRaw && audienceNotesRaw !== "—" ? audienceNotesRaw : null;
 
   // ── Step 5: Get active academic period ───────────────────────────────────
   const [periodRows] = await pool.execute<RowDataPacket[]>(
@@ -1203,25 +1377,22 @@ export async function importEventFull(
       const usedRange = attSheet.usedRange();
       if (usedRange) {
         const lastRow = usedRange.endCell().rowNumber();
+        const attCols = resolveAttendanceColumns(attSheet);
         for (let ri = 2; ri <= lastRow; ri++) {
           const studentIdVal = String(
-            attSheet.cell(ri, 1).value() ?? "",
+            attSheet.cell(ri, attCols.studentId).value() ?? "",
           ).trim();
-          const fullName = String(attSheet.cell(ri, 2).value() ?? "").trim();
+          const fullName = String(attSheet.cell(ri, attCols.fullName).value() ?? "").trim();
           const yearLevelStr = String(
-            attSheet.cell(ri, 6).value() ?? "",
+            attSheet.cell(ri, attCols.yearLevel).value() ?? "",
           ).trim();
           const attendanceVal = String(
-            attSheet.cell(ri, 7).value() ?? "",
+            attSheet.cell(ri, attCols.attendance).value() ?? "",
           ).trim();
-          const amIn =
-            String(attSheet.cell(ri, 8).value() ?? "").trim() || null;
-          const amOut =
-            String(attSheet.cell(ri, 9).value() ?? "").trim() || null;
-          const pmIn =
-            String(attSheet.cell(ri, 10).value() ?? "").trim() || null;
-          const pmOut =
-            String(attSheet.cell(ri, 11).value() ?? "").trim() || null;
+          const amIn = parseTimeCellToSql(attSheet.cell(ri, attCols.amIn).value());
+          const amOut = parseTimeCellToSql(attSheet.cell(ri, attCols.amOut).value());
+          const pmIn = parseTimeCellToSql(attSheet.cell(ri, attCols.pmIn).value());
+          const pmOut = parseTimeCellToSql(attSheet.cell(ri, attCols.pmOut).value());
 
           if (!studentIdVal) continue;
 
@@ -1310,25 +1481,28 @@ export async function importEventFull(
         ).trim();
         if (!firstCellVal.startsWith("No payment")) {
           const lastRow = usedRange.endCell().rowNumber();
+          const payCols = resolvePaymentColumns(paySheet);
           for (let ri = 2; ri <= lastRow; ri++) {
             const studentIdVal = String(
-              paySheet.cell(ri, 1).value() ?? "",
+              paySheet.cell(ri, payCols.studentId).value() ?? "",
             ).trim();
             const fineReason = String(
-              paySheet.cell(ri, 3).value() ?? "",
+              paySheet.cell(ri, payCols.fineReason).value() ?? "",
             ).trim();
-            const fineAmt = Number(paySheet.cell(ri, 4).value() ?? 0);
-            const amtPaid = Number(paySheet.cell(ri, 5).value() ?? 0);
+            const fineAmt = Number(paySheet.cell(ri, payCols.fineAmount).value() ?? 0);
+            const amtPaid = Number(paySheet.cell(ri, payCols.amountPaid).value() ?? 0);
             const fineStatus =
-              String(paySheet.cell(ri, 7).value() ?? "").trim() || "Unpaid";
+              String(paySheet.cell(ri, payCols.fineStatus).value() ?? "").trim() || "Unpaid";
             const receiptNo =
-              String(paySheet.cell(ri, 8).value() ?? "").trim() || null;
+              String(paySheet.cell(ri, payCols.receiptNo).value() ?? "").trim() || null;
             const paymentMethod =
-              String(paySheet.cell(ri, 9).value() ?? "").trim() || null;
+              payCols.paymentMethod > 0
+                ? String(paySheet.cell(ri, payCols.paymentMethod).value() ?? "").trim() || "Cash"
+                : "Cash";
             const remarks =
-              String(paySheet.cell(ri, 10).value() ?? "").trim() || null;
+              String(paySheet.cell(ri, payCols.remarks).value() ?? "").trim() || null;
             const paidAtRaw = String(
-              paySheet.cell(ri, 11).value() ?? "",
+              paySheet.cell(ri, payCols.paidAt).value() ?? "",
             ).trim();
 
             if (!studentIdVal || !fineReason) continue;
@@ -1340,45 +1514,71 @@ export async function importEventFull(
             if (stRows.length === 0) continue;
             const studentPk = stRows[0].id as number;
 
+            // Support aggregated export rows ("Absent AM, Absent AM Time Out") and legacy single-reason rows.
+            const reasons = fineReason
+              .split(",")
+              .map((r) => r.trim())
+              .filter(Boolean);
+            const reasonList = reasons.length > 0 ? reasons : [fineReason];
+            const shareCount = reasonList.length;
+            const totalFine = clampMoney(fineAmt);
+            const totalPaid = clampMoney(amtPaid);
+            let allocatedFine = 0;
+            let allocatedPaid = 0;
+
             try {
-              const [fineResult] = await pool.execute<ResultSetHeader>(
-                `INSERT INTO fines (student_id, event_id, reason, amount, paid_amount, status)
-                 VALUES (?, ?, ?, ?, ?, ?)`,
-                [
-                  studentPk,
-                  newEventId,
-                  fineReason,
-                  fineAmt,
-                  amtPaid,
-                  fineStatus,
-                ],
-              );
-              const fineId = fineResult.insertId;
-              finesCreated++;
+              for (let i = 0; i < shareCount; i++) {
+                const isLast = i === shareCount - 1;
+                const shareFine = isLast
+                  ? clampMoney(totalFine - allocatedFine)
+                  : clampMoney(totalFine / shareCount);
+                const sharePaid = isLast
+                  ? clampMoney(totalPaid - allocatedPaid)
+                  : clampMoney(totalPaid / shareCount);
+                allocatedFine = clampMoney(allocatedFine + shareFine);
+                allocatedPaid = clampMoney(allocatedPaid + sharePaid);
 
-              if (amtPaid > 0 && receiptNo) {
-                const paidAt = paidAtRaw
-                  ? new Date(paidAtRaw)
-                  : null;
-                const paidAtVal =
-                  paidAt && !isNaN(paidAt.getTime()) ? paidAt : null;
+                const [fineResult] = await pool.execute<ResultSetHeader>(
+                  `INSERT INTO fines (student_id, event_id, reason, amount, paid_amount, status)
+                   VALUES (?, ?, ?, ?, ?, ?)`,
+                  [
+                    studentPk,
+                    newEventId,
+                    reasonList[i],
+                    shareFine,
+                    sharePaid,
+                    fineStatus,
+                  ],
+                );
+                const fineId = fineResult.insertId;
+                finesCreated++;
 
-                try {
-                  await pool.execute(
-                    `INSERT IGNORE INTO payments
-                       (fine_id, amount_paid, receipt_no, payment_method, remarks, paid_at)
-                     VALUES (?, ?, ?, ?, ?, ?)`,
-                    [
-                      fineId,
-                      amtPaid,
-                      receiptNo,
-                      paymentMethod,
-                      remarks,
-                      paidAtVal,
-                    ],
-                  );
-                  paymentsCreated++;
-                } catch { /* skip duplicate payment */ }
+                if (sharePaid > 0 && receiptNo) {
+                  const paidAt = paidAtRaw ? new Date(paidAtRaw) : null;
+                  const paidAtVal =
+                    paidAt && !isNaN(paidAt.getTime()) ? paidAt : null;
+                  const receiptForShare =
+                    shareCount === 1
+                      ? receiptNo
+                      : `${receiptNo}-${String(i + 1).padStart(2, "0")}`;
+
+                  try {
+                    await pool.execute(
+                      `INSERT IGNORE INTO payments
+                         (fine_id, amount_paid, receipt_no, payment_method, remarks, paid_at)
+                       VALUES (?, ?, ?, ?, ?, ?)`,
+                      [
+                        fineId,
+                        sharePaid,
+                        receiptForShare,
+                        paymentMethod,
+                        remarks,
+                        paidAtVal,
+                      ],
+                    );
+                    paymentsCreated++;
+                  } catch { /* skip duplicate payment */ }
+                }
               }
             } catch (e) {
               errors.push(
