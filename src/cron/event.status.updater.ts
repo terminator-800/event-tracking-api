@@ -8,30 +8,39 @@ let isCronRunInProgress = false;
 const COMPLETION_GRACE_HOURS = 1;
 
 async function markOngoingEvents(currentDate: string, currentTime: string): Promise<number> {
+  // Do not wrap bound params in TIME(?)/CAST(? AS TIME) — mysql2 prepared statements
+  // evaluate those to a bad TIME and PM-only (and similar) events never leave Upcoming.
   const [result] = await pool.execute(
     `UPDATE events
      SET status = 'Ongoing'
-     WHERE date = ?
-       AND status = 'Upcoming'
-       AND COALESCE(am_time_in, pm_time_in) IS NOT NULL
-       AND COALESCE(am_time_in, pm_time_in) <= ?`,
-    [currentDate, currentTime]
+     WHERE DATE_FORMAT(date, '%Y-%m-%d') = ?
+       AND LOWER(TRIM(status)) = 'upcoming'
+       AND (
+         (am_time_in IS NOT NULL AND TIME_FORMAT(am_time_in, '%H:%i:%s') <= ?)
+         OR (am_time_in IS NULL AND pm_time_in IS NOT NULL AND TIME_FORMAT(pm_time_in, '%H:%i:%s') <= ?)
+       )`,
+    [currentDate, currentTime, currentTime]
   );
   return (result as any).affectedRows;
 }
 
 async function markCompletedEvents(currentDate: string, currentTime: string): Promise<number> {
+  // Prefer STR_TO_DATE(CONCAT(date, time)) over TIMESTAMP(?, ?) with prepared binds.
+  const nowTs = `STR_TO_DATE(CONCAT(?, ' ', ?), '%Y-%m-%d %H:%i:%s')`;
   const [result] = await pool.execute(
     `UPDATE events
      SET status = 'Completed'
-     WHERE status = 'Ongoing'
+     WHERE LOWER(TRIM(status)) = 'ongoing'
        AND (
          (duration = 'AM Only' AND am_time_out IS NOT NULL
-           AND DATE_ADD(TIMESTAMP(date, am_time_out), INTERVAL ${COMPLETION_GRACE_HOURS} HOUR) <= TIMESTAMP(?, ?))
+           AND DATE_ADD(TIMESTAMP(DATE(date), am_time_out), INTERVAL ${COMPLETION_GRACE_HOURS} HOUR) <= ${nowTs})
          OR (duration = 'PM Only' AND pm_time_out IS NOT NULL
-           AND DATE_ADD(TIMESTAMP(date, pm_time_out), INTERVAL ${COMPLETION_GRACE_HOURS} HOUR) <= TIMESTAMP(?, ?))
-         OR (duration IN ('Whole Day', 'Half Day') AND pm_time_out IS NOT NULL
-           AND DATE_ADD(TIMESTAMP(date, pm_time_out), INTERVAL ${COMPLETION_GRACE_HOURS} HOUR) <= TIMESTAMP(?, ?))
+           AND DATE_ADD(TIMESTAMP(DATE(date), pm_time_out), INTERVAL ${COMPLETION_GRACE_HOURS} HOUR) <= ${nowTs})
+         OR (duration IN ('Whole Day', 'Half Day') AND COALESCE(pm_time_out, am_time_out) IS NOT NULL
+           AND DATE_ADD(
+             TIMESTAMP(DATE(date), COALESCE(pm_time_out, am_time_out)),
+             INTERVAL ${COMPLETION_GRACE_HOURS} HOUR
+           ) <= ${nowTs})
        )`,
     [currentDate, currentTime, currentDate, currentTime, currentDate, currentTime]
   );
@@ -42,8 +51,8 @@ async function markStalledEvents(currentDate: string): Promise<number> {
   const [result] = await pool.execute(
     `UPDATE events
      SET status = 'Completed'
-     WHERE date < ?
-       AND status IN ('Ongoing', 'Upcoming')`,
+     WHERE DATE(date) < ?
+       AND LOWER(TRIM(status)) IN ('ongoing', 'upcoming')`,
     [currentDate]
   );
   return (result as any).affectedRows;
@@ -51,7 +60,7 @@ async function markStalledEvents(currentDate: string): Promise<number> {
 
 async function generateEndOfEventFines(currentDate: string): Promise<void> {
   const [events] = await pool.execute(
-    `SELECT id, duration, fine_amount, is_all_departments, am_time_out, pm_time_out, academic_period_id
+    `SELECT id, duration, event_mode, fine_amount, is_all_departments, am_time_out, pm_time_out, academic_period_id
      FROM events
      WHERE status = 'Completed'
        AND date <= ?
@@ -63,6 +72,8 @@ async function generateEndOfEventFines(currentDate: string): Promise<void> {
     const isWholeOrHalf = ['Whole Day', 'Half Day'].includes(event.duration);
     const isAMOnly      = event.duration === 'AM Only';
     const isPMOnly      = event.duration === 'PM Only';
+    const timeInOnly =
+      String(event.event_mode ?? "").trim().toUpperCase() === "TIME_IN_ONLY";
     const academicPeriodId =
       event.academic_period_id != null && Number.isFinite(Number(event.academic_period_id))
         ? Number(event.academic_period_id)
@@ -100,24 +111,26 @@ async function generateEndOfEventFines(currentDate: string): Promise<void> {
         [event.id, academicPeriodId, event.fine_amount, event.id, ...eligibleParams]
       );
 
-      await pool.execute(
-        `INSERT IGNORE INTO fines (student_id, event_id, attendance_id, academic_period_id, reason, amount)
-         SELECT es.student_id, ?, NULL, ?, 'Absent AM Time Out', ?
-         FROM ${eligibleStudentsCte}
-         LEFT JOIN attendance a ON a.student_id = es.student_id AND a.event_id = ?
-         WHERE (a.id IS NULL OR a.am_time_in IS NULL)
-           AND (a.id IS NULL OR a.am_time_out IS NULL)`,
-        [event.id, academicPeriodId, event.fine_amount, event.id, ...eligibleParams]
-      );
+      if (!timeInOnly) {
+        await pool.execute(
+          `INSERT IGNORE INTO fines (student_id, event_id, attendance_id, academic_period_id, reason, amount)
+           SELECT es.student_id, ?, NULL, ?, 'Absent AM Time Out', ?
+           FROM ${eligibleStudentsCte}
+           LEFT JOIN attendance a ON a.student_id = es.student_id AND a.event_id = ?
+           WHERE (a.id IS NULL OR a.am_time_in IS NULL)
+             AND (a.id IS NULL OR a.am_time_out IS NULL)`,
+          [event.id, academicPeriodId, event.fine_amount, event.id, ...eligibleParams]
+        );
 
-      await pool.execute(
-        `INSERT IGNORE INTO fines (student_id, event_id, attendance_id, academic_period_id, reason, amount)
-         SELECT es.student_id, ?, a.id, ?, 'Missed AM Time Out', ?
-         FROM ${eligibleStudentsCte}
-         INNER JOIN attendance a ON a.student_id = es.student_id AND a.event_id = ?
-         WHERE a.am_time_in IS NOT NULL AND a.am_time_out IS NULL`,
-        [event.id, academicPeriodId, event.fine_amount, event.id, ...eligibleParams]
-      );
+        await pool.execute(
+          `INSERT IGNORE INTO fines (student_id, event_id, attendance_id, academic_period_id, reason, amount)
+           SELECT es.student_id, ?, a.id, ?, 'Missed AM Time Out', ?
+           FROM ${eligibleStudentsCte}
+           INNER JOIN attendance a ON a.student_id = es.student_id AND a.event_id = ?
+           WHERE a.am_time_in IS NOT NULL AND a.am_time_out IS NULL`,
+          [event.id, academicPeriodId, event.fine_amount, event.id, ...eligibleParams]
+        );
+      }
     }
 
     if (isWholeOrHalf || isPMOnly) {
@@ -130,24 +143,26 @@ async function generateEndOfEventFines(currentDate: string): Promise<void> {
         [event.id, academicPeriodId, event.fine_amount, event.id, ...eligibleParams]
       );
 
-      await pool.execute(
-        `INSERT IGNORE INTO fines (student_id, event_id, attendance_id, academic_period_id, reason, amount)
-         SELECT es.student_id, ?, NULL, ?, 'Absent PM Time Out', ?
-         FROM ${eligibleStudentsCte}
-         LEFT JOIN attendance a ON a.student_id = es.student_id AND a.event_id = ?
-         WHERE (a.id IS NULL OR a.pm_time_in IS NULL)
-           AND (a.id IS NULL OR a.pm_time_out IS NULL)`,
-        [event.id, academicPeriodId, event.fine_amount, event.id, ...eligibleParams]
-      );
+      if (!timeInOnly) {
+        await pool.execute(
+          `INSERT IGNORE INTO fines (student_id, event_id, attendance_id, academic_period_id, reason, amount)
+           SELECT es.student_id, ?, NULL, ?, 'Absent PM Time Out', ?
+           FROM ${eligibleStudentsCte}
+           LEFT JOIN attendance a ON a.student_id = es.student_id AND a.event_id = ?
+           WHERE (a.id IS NULL OR a.pm_time_in IS NULL)
+             AND (a.id IS NULL OR a.pm_time_out IS NULL)`,
+          [event.id, academicPeriodId, event.fine_amount, event.id, ...eligibleParams]
+        );
 
-      await pool.execute(
-        `INSERT IGNORE INTO fines (student_id, event_id, attendance_id, academic_period_id, reason, amount)
-         SELECT es.student_id, ?, a.id, ?, 'Missed PM Time Out', ?
-         FROM ${eligibleStudentsCte}
-         INNER JOIN attendance a ON a.student_id = es.student_id AND a.event_id = ?
-         WHERE a.pm_time_in IS NOT NULL AND a.pm_time_out IS NULL`,
-        [event.id, academicPeriodId, event.fine_amount, event.id, ...eligibleParams]
-      );
+        await pool.execute(
+          `INSERT IGNORE INTO fines (student_id, event_id, attendance_id, academic_period_id, reason, amount)
+           SELECT es.student_id, ?, a.id, ?, 'Missed PM Time Out', ?
+           FROM ${eligibleStudentsCte}
+           INNER JOIN attendance a ON a.student_id = es.student_id AND a.event_id = ?
+           WHERE a.pm_time_in IS NOT NULL AND a.pm_time_out IS NULL`,
+          [event.id, academicPeriodId, event.fine_amount, event.id, ...eligibleParams]
+        );
+      }
     }
 
     await pool.execute(
@@ -191,6 +206,9 @@ async function updateEventStatuses(): Promise<void> {
 /** node-cron v4 is ESM-only; load it dynamically from this CommonJS project. */
 export async function registerEventStatusCron(): Promise<void> {
   const cron = (await import("node-cron")).default;
+
+  // Catch up immediately on boot (env clock / missed ticks).
+  void updateEventStatuses();
 
   cron.schedule("* * * * *", () => {
     void updateEventStatuses();

@@ -83,7 +83,7 @@ private async findOngoingEvent(currentDate: string) {
   if (activePeriod) params.push(activePeriod.id);
 
   const [rows] = await pool.execute(
-    `SELECT id, duration, fine_amount,
+    `SELECT id, duration, event_mode, fine_amount,
             am_time_in, am_grace_in, am_time_out,
             pm_time_in, pm_grace_in, pm_time_out,
             is_all_departments, attendance_password_hash, academic_period_id
@@ -106,7 +106,7 @@ private async findOngoingEventById(eventId: number, currentDate: string) {
   if (activePeriod) params.push(activePeriod.id);
 
   const [rows] = await pool.execute(
-    `SELECT id, duration, fine_amount,
+    `SELECT id, duration, event_mode, fine_amount,
             am_time_in, am_grace_in, am_time_out,
             pm_time_in, pm_grace_in, pm_time_out,
             is_all_departments, attendance_password_hash, academic_period_id
@@ -207,11 +207,20 @@ private async findAttendanceRow(studentId: number, eventId: number) {
   return (rows as any[])[0] ?? null;
 }
 
+private isTimeInOnlyEvent(event: { event_mode?: string | null }): boolean {
+  return String(event?.event_mode ?? "").trim().toUpperCase() === "TIME_IN_ONLY";
+}
+
 private inferAttendanceKindFromSlot(
   attendance: any,
-  slot: "AM" | "PM"
+  slot: "AM" | "PM",
+  timeInOnly = false,
 ): "in" | "out" {
   if (!attendance) return "in";
+  if (timeInOnly) {
+    // Time-In Only events never switch to time-out.
+    return "in";
+  }
   if (slot === "AM") {
     return attendance.am_time_in ? "out" : "in";
   }
@@ -471,14 +480,31 @@ public recordAttendance = async (req: Request, res: Response): Promise<void> => 
 
     const slot = this.determineSlot(currentTime, event);
     const isAM = slot === "AM";
+    const timeInOnly = this.isTimeInOnlyEvent(event);
     const academicPeriodId =
       event.academic_period_id != null && Number.isFinite(Number(event.academic_period_id))
         ? Number(event.academic_period_id)
         : (await getActiveAcademicPeriod())?.id ?? null;
     const attendanceRow = await this.findAttendanceRow(student.id, event.id);
     const { timeInDone, timeOutDone } = this.getSlotAttendanceStatus(attendanceRow, slot);
-    const inferredKind = this.inferAttendanceKindFromSlot(attendanceRow, slot);
+    const inferredKind = this.inferAttendanceKindFromSlot(attendanceRow, slot, timeInOnly);
     const resolvedAttendanceKind = requestedKind ?? inferredKind;
+
+    if (timeInOnly && (requestedKind === "out" || resolvedAttendanceKind === "out")) {
+      res.status(409).json({
+        status: "time_out_disabled",
+        message: `${slot} time out is disabled for this Time-In Only event. Time in marks attendance as Present.`,
+      });
+      return;
+    }
+
+    if (timeInOnly && timeInDone) {
+      res.status(409).json({
+        status: "already_submitted",
+        message: `${slot} time in is already recorded. Student is Present for this Time-In Only event.`,
+      });
+      return;
+    }
 
     if (requestedKind === "in" && inferredKind === "out") {
       res.status(409).json({
@@ -509,6 +535,16 @@ public recordAttendance = async (req: Request, res: Response): Promise<void> => 
           event.fine_amount
         );
       }
+
+      res.status(200).json({
+        message: timeInOnly
+          ? `Attendance time in recorded successfully. Student marked Present (${slot} Time-In Only).`
+          : `Attendance in recorded successfully.`,
+        status: timeInOnly ? "present" : undefined,
+        attendanceKind: "in",
+        eventMode: timeInOnly ? "TIME_IN_ONLY" : "TIME_IN_OUT",
+      });
+      return;
 
     } else {
       if (timeOutDone) {

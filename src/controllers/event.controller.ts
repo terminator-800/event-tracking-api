@@ -10,26 +10,27 @@ import {
   parseAttendancePasswordFromBody,
 } from "./services/event-password.service";
 import { sanitizeEventRow, sanitizeEventRows } from "../utils/eventResponse";
+import { newEventUuid } from "../models/events.model";
+import { ALL_GOVERNOR_ROLE_VALUES, isGovernorRole } from "../utils/roles";
 
-/** Frontend sends this when CEAS governor picks "All Majors" — audience = every program in that department. */
+/** Frontend sends this when a governor picks "All Majors" for CEAS — audience = every program in that department. */
 const CEAS_GOVERNOR_ALL_PROGRAMS_SENTINEL = "__CEAS_GOVERNOR_ALL_PROGRAMS__";
 
-/** Frontend sends this when CBA governor picks "All Majors" — audience = whole BSBA cohort (department scope). */
+/** Frontend sends this when a governor picks "All Majors" for CBA — audience = whole BSBA cohort (department scope). */
 const CBA_GOVERNOR_ALL_BSBA_SENTINEL = "__CBA_GOVERNOR_ALL_BSBA__";
 
-const GOVERNOR_ROLES: Role[] = [
-  "it_governor",
-  "cba_governor",
-  "ceas_governor",
-  "coc_governor",
-  "chm_governor",
-];
+type EventMode = "TIME_IN_OUT" | "TIME_IN_ONLY";
 
 interface CreateEventBody {
   name: string;
   date: string;
   venue: string;
   duration: "Whole Day" | "Half Day" | "AM Only" | "PM Only";
+  /** Preferred: TIME_IN_OUT | TIME_IN_ONLY */
+  event_mode?: EventMode;
+  /** Alternate boolean flags from older/alternate clients */
+  time_in_only?: boolean;
+  timeInOnly?: boolean;
   amTimeIn?: string;
   amTimeOut?: string;
   pmTimeIn?: string;
@@ -59,6 +60,9 @@ interface UpdateEventBody {
   date: string;
   venue: string;
   duration: "Whole Day" | "Half Day" | "AM Only" | "PM Only";
+  event_mode?: EventMode;
+  time_in_only?: boolean;
+  timeInOnly?: boolean;
   am_time_in?: string | null;
   am_time_out?: string | null;
   pm_time_in?: string | null;
@@ -126,6 +130,23 @@ private resolveTimings(body: CreateEventBody) {
   };
 }
 
+private resolveEventMode(body: {
+  event_mode?: unknown;
+  time_in_only?: unknown;
+  timeInOnly?: unknown;
+}): EventMode {
+  const mode = String(body.event_mode ?? "").trim().toUpperCase();
+  if (mode === "TIME_IN_ONLY") return "TIME_IN_ONLY";
+  if (mode === "TIME_IN_OUT") return "TIME_IN_OUT";
+  if (body.time_in_only === true || body.time_in_only === 1 || body.time_in_only === "1") {
+    return "TIME_IN_ONLY";
+  }
+  if (body.timeInOnly === true || body.timeInOnly === 1 || body.timeInOnly === "1") {
+    return "TIME_IN_ONLY";
+  }
+  return "TIME_IN_OUT";
+}
+
 async createEvent(req: Request, res: Response): Promise<void> {
   const createdBy: number = req.user?.id!;
 
@@ -180,6 +201,7 @@ async createEvent(req: Request, res: Response): Promise<void> {
   }
 
   const { amIn, amOut, pmIn, pmOut, graceAmIn, graceAmOut, gracePmIn, gracePmOut } = this.resolveTimings(req.body);
+  const eventMode = this.resolveEventMode(req.body);
 
   let audiencesToInsert: EventAudienceInsertRow[] = [];
   let resolvedDepartmentId: number | null = null;
@@ -190,7 +212,7 @@ async createEvent(req: Request, res: Response): Promise<void> {
 
     if (
       courseKey === CEAS_GOVERNOR_ALL_PROGRAMS_SENTINEL &&
-      userRole === "ceas_governor" &&
+      isGovernorRole(userRole) &&
       userDepartmentId != null &&
       Number.isFinite(Number(userDepartmentId))
     ) {
@@ -198,7 +220,7 @@ async createEvent(req: Request, res: Response): Promise<void> {
       audiencesToInsert = [{ departmentId: resolvedDepartmentId, programId: null, yearLevel: parsedYearLevel }];
     } else if (
       courseKey === CBA_GOVERNOR_ALL_BSBA_SENTINEL &&
-      userRole === "cba_governor" &&
+      isGovernorRole(userRole) &&
       userDepartmentId != null &&
       Number.isFinite(Number(userDepartmentId))
     ) {
@@ -210,7 +232,7 @@ async createEvent(req: Request, res: Response): Promise<void> {
         userDepartmentId != null && Number.isFinite(Number(userDepartmentId))
           ? Number(userDepartmentId)
           : null;
-      const isGovernor = userRole != null && GOVERNOR_ROLES.includes(userRole);
+      const isGovernor = isGovernorRole(userRole);
 
       let programRow: { id: number; department_id: number } | null = null;
 
@@ -336,16 +358,23 @@ async createEvent(req: Request, res: Response): Promise<void> {
   try {
     await connection.beginTransaction();
 
+    const eventUuid = newEventUuid();
+    // Master events point master_event_uuid at themselves for stable CSG↔governor linking.
+    const masterEventUuid = eventUuid;
+
     const [eventResult] = await connection.execute<ResultSetHeader>(
       `INSERT INTO events (
-        name, date, venue, duration,
+        event_uuid, event_version, master_event_uuid,
+        name, date, venue, duration, event_mode,
         am_time_in, am_grace_in, am_time_out, am_grace_out,
         pm_time_in, pm_grace_in, pm_time_out, pm_grace_out,
         is_mandatory, is_all_departments,
         status, audience_notes, fine_amount, attendance_password_hash, created_by, academic_period_id
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ) VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
-        name, date, venue, duration,
+        eventUuid,
+        masterEventUuid,
+        name, date, venue, duration, eventMode,
         amIn,  graceAmIn,  amOut, graceAmOut,
         pmIn,  gracePmIn,  pmOut, gracePmOut,
         isMandatory ? 1 : 0,
@@ -468,6 +497,7 @@ async updateEvent(req: Request, res: Response): Promise<void> {
     const pmOut = this.normalizeTimeInput(body.pm_time_out ?? null);
     const graceAmIn = this.resolveGracePeriod(body.am_grace_in);
     const gracePmIn = this.resolveGracePeriod(body.pm_grace_in);
+    const eventMode = this.resolveEventMode(body);
     const audienceNotes = body.audience_notes != null ? String(body.audience_notes) : null;
     const fineAmountRaw = body.fine_amount;
     const fineAmount = Number.isFinite(Number(fineAmountRaw)) ? Math.max(0, Number(fineAmountRaw)) : 0;
@@ -479,6 +509,7 @@ async updateEvent(req: Request, res: Response): Promise<void> {
          date = ?,
          venue = ?,
          duration = ?,
+         event_mode = ?,
          am_time_in = ?,
          am_time_out = ?,
          pm_time_in = ?,
@@ -493,6 +524,7 @@ async updateEvent(req: Request, res: Response): Promise<void> {
         date,
         venue,
         duration,
+        eventMode,
         amIn,
         amOut,
         pmIn,
@@ -553,7 +585,12 @@ async deleteEvent(req: Request, res: Response): Promise<void> {
 
     const event = rows[0];
     const statusKey = String(event.status ?? "").trim().toLowerCase();
-    if (statusKey === "completed" || statusKey === "ongoing" || statusKey === "active") {
+    const isSuperAdmin = userRole === "super_admin";
+    // Super admin may delete any event; other roles cannot delete ongoing/completed.
+    if (
+      !isSuperAdmin &&
+      (statusKey === "completed" || statusKey === "ongoing" || statusKey === "active")
+    ) {
       res.status(403).json({ message: "Completed or ongoing events cannot be deleted." });
       return;
     }
@@ -730,6 +767,39 @@ async getCurrentEvent(req: Request, res: Response): Promise<void> {
 
     console.log("[getCurrentEvent] user:", { role, departmentId, activePeriodId: activePeriod?.id ?? null });
 
+    // Admin / super_admin: every upcoming & ongoing event (all creators / departments).
+    if (role === "admin" || role === "super_admin") {
+      const [rows]: any = await pool.execute(
+        `SELECT
+          e.*,
+          u.username AS created_by_username,
+          JSON_ARRAYAGG(
+            JSON_OBJECT(
+              'department_id',   ea.department_id,
+              'department_name', d.name,
+              'department_code', d.code,
+              'program_id',      ea.program_id,
+              'course_code',     p.course_code,
+              'course_name',     p.course_name,
+              'major',           NULLIF(TRIM(p.major), ''),
+              'year_level',      ea.year_level
+            )
+          ) AS audiences
+        FROM events e
+        LEFT JOIN users u            ON u.id  = e.created_by
+        LEFT JOIN event_audiences ea ON ea.event_id = e.id
+        LEFT JOIN departments d      ON d.id = ea.department_id
+        LEFT JOIN programs p         ON p.id = ea.program_id
+        WHERE e.status IN ('Upcoming', 'Ongoing')
+        ${periodClause}
+        GROUP BY e.id
+        ORDER BY e.date ASC`,
+        periodParams,
+      );
+      res.status(200).json({ events: sanitizeEventRows(rows) });
+      return;
+    }
+
     if (role === "csg_president" && userId) {
       const [rows]: any = await pool.execute(
         `SELECT
@@ -769,7 +839,7 @@ async getCurrentEvent(req: Request, res: Response): Promise<void> {
       // Governors: only events they created. Admins stay department/global as before.
       if (departmentId) {
         const filterByCreator =
-          role != null && GOVERNOR_ROLES.includes(role) && !!userId;
+          isGovernorRole(role) && !!userId;
         const creatorSql = filterByCreator ? " AND e.created_by = ?" : "";
 
         const [rows]: any = await pool.execute(
@@ -810,7 +880,7 @@ async getCurrentEvent(req: Request, res: Response): Promise<void> {
 
       // Public (not logged in): CSG / all-departments events unchanged, plus governor-created
       // upcoming & ongoing events for the public homepage.
-      const govPlaceholders = GOVERNOR_ROLES.map(() => "?").join(", ");
+      const govPlaceholders = ALL_GOVERNOR_ROLE_VALUES.map(() => "?").join(", ");
       const [rows]: any = await pool.execute(
         `SELECT * FROM (
           (
@@ -870,7 +940,7 @@ async getCurrentEvent(req: Request, res: Response): Promise<void> {
           )
         ) AS public_events
         ORDER BY date ASC`,
-        [...periodParams, ...GOVERNOR_ROLES, ...periodParams]
+        [...periodParams, ...ALL_GOVERNOR_ROLE_VALUES, ...periodParams]
       );
       console.log("get current events:", rows.length);
 
