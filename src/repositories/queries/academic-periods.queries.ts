@@ -52,6 +52,4 @@ export const ACADEMIC_PERIOD_QUERIES = {
     WHERE id = ?
   `,
   deleteById: `DELETE FROM academic_periods WHERE id = ? AND status <> 'active'`,
-  countEnrollments: `SELECT COUNT(*) AS cnt FROM enrollments WHERE academic_period_id = ?`,
-  countEvents: `SELECT COUNT(*) AS cnt FROM events WHERE academic_period_id = ?`,
 };

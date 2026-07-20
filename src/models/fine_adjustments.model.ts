@@ -32,4 +32,45 @@ export async function createFineAdjustmentsTable(): Promise<void> {
       FOREIGN KEY (academic_period_id) REFERENCES academic_periods(id) ON DELETE RESTRICT
     );
   `);
+
+  await ensureColumn(
+    `ALTER TABLE fine_adjustments ADD COLUMN academic_period_id INT NULL AFTER fine_id`,
+  );
+  await ensureIndex(
+    `ALTER TABLE fine_adjustments ADD INDEX idx_fine_adjustments_academic_period (academic_period_id)`,
+  );
+  await ensureFk(
+    `ALTER TABLE fine_adjustments
+      ADD CONSTRAINT fk_fine_adjustments_academic_period
+      FOREIGN KEY (academic_period_id) REFERENCES academic_periods(id) ON DELETE RESTRICT`,
+  );
+}
+
+async function ensureColumn(sql: string): Promise<void> {
+  try {
+    await pool.execute(sql);
+  } catch (err: unknown) {
+    const code = (err as { code?: string })?.code;
+    if (code !== "ER_DUP_FIELDNAME") throw err;
+  }
+}
+
+async function ensureIndex(sql: string): Promise<void> {
+  try {
+    await pool.execute(sql);
+  } catch (err: unknown) {
+    const code = (err as { code?: string })?.code;
+    if (code !== "ER_DUP_KEYNAME") throw err;
+  }
+}
+
+async function ensureFk(sql: string): Promise<void> {
+  try {
+    await pool.execute(sql);
+  } catch (err: unknown) {
+    const code = (err as { code?: string })?.code;
+    const errno = (err as { errno?: number })?.errno;
+    if (code === "ER_DUP_KEYNAME" || errno === 1826 || errno === 1005) return;
+    throw err;
+  }
 }

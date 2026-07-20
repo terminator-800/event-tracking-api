@@ -1,7 +1,7 @@
 import { pool } from "../config/db";
 
 /**
- * Existing database (run manually in MySQL Workbench):
+ * Existing database (run manually in MySQL Workbench if auto-migrate fails):
  *
  * ALTER TABLE fines
  *   ADD COLUMN academic_period_id INT NULL AFTER attendance_id,
@@ -40,4 +40,53 @@ export async function createFinesTable(): Promise<void> {
       FOREIGN KEY (academic_period_id) REFERENCES academic_periods(id) ON DELETE RESTRICT
     );
   `);
+
+  // Legacy DBs: CREATE TABLE IF NOT EXISTS will not add columns added later.
+  await ensureColumn(
+    `ALTER TABLE fines ADD COLUMN academic_period_id INT NULL AFTER attendance_id`,
+  );
+  await ensureIndex(`ALTER TABLE fines ADD INDEX idx_fines_academic_period (academic_period_id)`);
+  await ensureFk(
+    `ALTER TABLE fines
+      ADD CONSTRAINT fk_fines_academic_period
+      FOREIGN KEY (academic_period_id) REFERENCES academic_periods(id) ON DELETE RESTRICT`,
+  );
+
+  await pool.execute(`
+    UPDATE fines f
+    INNER JOIN events e ON e.id = f.event_id
+    SET f.academic_period_id = e.academic_period_id
+    WHERE f.academic_period_id IS NULL
+      AND e.academic_period_id IS NOT NULL
+  `);
+}
+
+async function ensureColumn(sql: string): Promise<void> {
+  try {
+    await pool.execute(sql);
+  } catch (err: unknown) {
+    const code = (err as { code?: string })?.code;
+    if (code !== "ER_DUP_FIELDNAME") throw err;
+  }
+}
+
+async function ensureIndex(sql: string): Promise<void> {
+  try {
+    await pool.execute(sql);
+  } catch (err: unknown) {
+    const code = (err as { code?: string })?.code;
+    if (code !== "ER_DUP_KEYNAME") throw err;
+  }
+}
+
+async function ensureFk(sql: string): Promise<void> {
+  try {
+    await pool.execute(sql);
+  } catch (err: unknown) {
+    const code = (err as { code?: string })?.code;
+    const errno = (err as { errno?: number })?.errno;
+    // Duplicate constraint name / FK already exists
+    if (code === "ER_DUP_KEYNAME" || errno === 1826 || errno === 1005) return;
+    throw err;
+  }
 }

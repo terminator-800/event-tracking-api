@@ -306,6 +306,11 @@ export async function activateAcademicPeriod(
   return { success: true, status: 200, data: { period: period! } };
 }
 
+/**
+ * Super admin may delete draft/archived periods. Cascades period-scoped
+ * operational data (payments, fines, attendance, events, enrollments) so
+ * foreign keys with ON DELETE RESTRICT do not block removal.
+ */
 export async function deleteAcademicPeriod(id: number): Promise<ServiceResult> {
   const current = await getAcademicPeriodById(id);
   if (!current) {
@@ -320,25 +325,73 @@ export async function deleteAcademicPeriod(id: number): Promise<ServiceResult> {
     };
   }
 
-  const [[enrollmentRows], [eventRows]] = await Promise.all([
-    pool.execute<RowDataPacket[]>(ACADEMIC_PERIOD_QUERIES.countEnrollments, [id]),
-    pool.execute<RowDataPacket[]>(ACADEMIC_PERIOD_QUERIES.countEvents, [id]),
-  ]);
+  const connection = await pool.getConnection();
+  try {
+    await connection.beginTransaction();
 
-  const enrollmentCount = Number(enrollmentRows[0]?.cnt ?? 0);
-  const eventCount = Number(eventRows[0]?.cnt ?? 0);
-  if (enrollmentCount > 0 || eventCount > 0) {
-    return {
-      success: false,
-      status: 400,
-      message: `Cannot delete this period — it has ${enrollmentCount} enrollment(s) and ${eventCount} event(s) linked. Remove or reassign that data first.`,
-    };
+    // Payments / adjustments may reference the period directly or via events/fines.
+    await connection.execute(
+      `DELETE fa FROM fine_adjustments fa
+       LEFT JOIN fines f ON f.id = fa.fine_id
+       LEFT JOIN events e ON e.id = f.event_id
+       WHERE fa.academic_period_id = ?
+          OR f.academic_period_id = ?
+          OR e.academic_period_id = ?`,
+      [id, id, id],
+    );
+
+    await connection.execute(
+      `DELETE p FROM payments p
+       LEFT JOIN fines f ON f.id = p.fine_id
+       LEFT JOIN events e ON e.id = f.event_id
+       WHERE p.academic_period_id = ?
+          OR f.academic_period_id = ?
+          OR e.academic_period_id = ?`,
+      [id, id, id],
+    );
+
+    await connection.execute(`DELETE FROM payment_transactions WHERE academic_period_id = ?`, [id]);
+
+    await connection.execute(
+      `DELETE f FROM fines f
+       LEFT JOIN events e ON e.id = f.event_id
+       WHERE f.academic_period_id = ?
+          OR e.academic_period_id = ?`,
+      [id, id],
+    );
+
+    await connection.execute(
+      `DELETE a FROM attendance a
+       LEFT JOIN events e ON e.id = a.event_id
+       WHERE a.academic_period_id = ?
+          OR e.academic_period_id = ?`,
+      [id, id],
+    );
+
+    await connection.execute(
+      `DELETE ea FROM event_audiences ea
+       INNER JOIN events e ON e.id = ea.event_id
+       WHERE e.academic_period_id = ?`,
+      [id],
+    );
+
+    await connection.execute(`DELETE FROM events WHERE academic_period_id = ?`, [id]);
+    await connection.execute(`DELETE FROM enrollments WHERE academic_period_id = ?`, [id]);
+
+    const [result] = await connection.execute<ResultSetHeader>(ACADEMIC_PERIOD_QUERIES.deleteById, [
+      id,
+    ]);
+    if (result.affectedRows === 0) {
+      await connection.rollback();
+      return { success: false, status: 400, message: "Academic period could not be deleted." };
+    }
+
+    await connection.commit();
+    return { success: true, status: 200 };
+  } catch (error) {
+    await connection.rollback();
+    throw error;
+  } finally {
+    connection.release();
   }
-
-  const [result] = await pool.execute<ResultSetHeader>(ACADEMIC_PERIOD_QUERIES.deleteById, [id]);
-  if (result.affectedRows === 0) {
-    return { success: false, status: 400, message: "Academic period could not be deleted." };
-  }
-
-  return { success: true, status: 200 };
 }
