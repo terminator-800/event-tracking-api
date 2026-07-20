@@ -1,21 +1,32 @@
 import { pool } from "../config/db";
+import { GOVERNOR_ROLE, LEGACY_GOVERNOR_ROLES } from "../utils/roles";
 
 /**
- * Existing database (run manually in MySQL Workbench):
- *
- * ALTER TABLE users
- *   ADD COLUMN full_name VARCHAR(255) NULL AFTER username;
+ * Existing database (run manually in MySQL Workbench if auto-migrate fails):
  *
  * ALTER TABLE users
  *   MODIFY COLUMN role ENUM(
  *     'super_admin',
  *     'admin',
  *     'csg_president',
+ *     'governor',
  *     'it_governor',
  *     'cba_governor',
  *     'ceas_governor',
  *     'coc_governor',
  *     'chm_governor'
+ *   ) NOT NULL DEFAULT 'csg_president';
+ *
+ * UPDATE users SET role = 'governor'
+ * WHERE role IN ('it_governor','cba_governor','ceas_governor','coc_governor','chm_governor');
+ *
+ * ALTER TABLE users
+ *   MODIFY COLUMN role ENUM(
+ *     'super_admin',
+ *     'admin',
+ *     'csg_president',
+ *     'governor',
+ *     'cashier'
  *   ) NOT NULL DEFAULT 'csg_president';
  */
 export async function createUsersTable(): Promise<void> {
@@ -29,6 +40,8 @@ export async function createUsersTable(): Promise<void> {
         'super_admin',
         'admin',
         'csg_president',
+        'governor',
+        'cashier',
         'it_governor',
         'cba_governor',
         'ceas_governor',
@@ -48,4 +61,53 @@ export async function createUsersTable(): Promise<void> {
       FOREIGN KEY (program_id) REFERENCES programs(id) ON DELETE RESTRICT
     )
   `);
+
+  await migrateUsersRoleEnumToUnifiedGovernor();
+}
+
+/** Expand ENUM, merge legacy governor roles into `governor`, then shrink ENUM. */
+async function migrateUsersRoleEnumToUnifiedGovernor(): Promise<void> {
+  try {
+    await pool.execute(`
+      ALTER TABLE users
+        MODIFY COLUMN role ENUM(
+          'super_admin',
+          'admin',
+          'csg_president',
+          'governor',
+          'cashier',
+          'it_governor',
+          'cba_governor',
+          'ceas_governor',
+          'coc_governor',
+          'chm_governor'
+        ) NOT NULL DEFAULT 'csg_president'
+    `);
+  } catch (error) {
+    console.warn("[users] Could not expand role ENUM (may already include governor/cashier):", error);
+  }
+
+  const legacyList = LEGACY_GOVERNOR_ROLES.map((r) => `'${r}'`).join(",");
+  try {
+    await pool.execute(
+      `UPDATE users SET role = '${GOVERNOR_ROLE}' WHERE role IN (${legacyList})`,
+    );
+  } catch (error) {
+    console.warn("[users] Could not migrate legacy governor roles:", error);
+  }
+
+  try {
+    await pool.execute(`
+      ALTER TABLE users
+        MODIFY COLUMN role ENUM(
+          'super_admin',
+          'admin',
+          'csg_president',
+          'governor',
+          'cashier'
+        ) NOT NULL DEFAULT 'csg_president'
+    `);
+  } catch (error) {
+    console.warn("[users] Could not shrink role ENUM after governor unify:", error);
+  }
 }

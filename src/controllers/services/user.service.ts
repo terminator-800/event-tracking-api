@@ -7,6 +7,7 @@ import {
   isDepartmentExcludedFromImport,
   normalizeDepartmentLookupKey,
 } from "../../models/departments.model";
+import { GOVERNOR_ROLE, isGovernorRole } from "../../utils/roles";
 
 interface RegisterPayload {
   department: string;
@@ -21,6 +22,8 @@ interface UpdateUserPayload {
   fullName?: string;
   username?: string;
   password?: string;
+  role?: Role;
+  department?: string;
 }
 
 interface FailResult {
@@ -40,14 +43,6 @@ interface ResolvedIds {
   departmentId: number | null;
   programId: number | null;
 }
-
-const GOVERNOR_ROLES: Role[] = [
-  "it_governor",
-  "cba_governor",
-  "ceas_governor",
-  "coc_governor",
-  "chm_governor",
-];
 
 // ── DB Helpers ────────────────────────────────────────────────────────────────
 
@@ -142,8 +137,8 @@ async function insertUser(
 // ── Main Service ──────────────────────────────────────────────────────────────
 
 export async function createUser(payload: RegisterPayload): Promise<ServiceResult> {
-  const { department, fullName, major, password, role, username } = payload;
-  const csg_president = "csg_president";
+  const { department, fullName, major, password, username } = payload;
+  let { role } = payload;
   try {
 
     if (await isUsernameTaken(username)) {
@@ -154,15 +149,20 @@ export async function createUser(payload: RegisterPayload): Promise<ServiceResul
     let programId: number | null = null;
     let studentId: number | null = null;
 
-    if (role === csg_president) {
+    if (role === "csg_president") {
       const resolved = await resolveCSGPresidentIds();
       if ("success" in resolved) return resolved;
       ({ departmentId, programId } = resolved);
 
-    } else if (GOVERNOR_ROLES.includes(role)) {
+    } else if (role === "cashier") {
+      departmentId = null;
+      programId = null;
+
+    } else if (isGovernorRole(role)) {
       const resolved = await resolveGovernorIds(department, major);
       if ("success" in resolved) return resolved;
       ({ departmentId, programId } = resolved);
+      role = GOVERNOR_ROLE;
     }
 
     const hashedPassword = await bcrypt.hash(password, 10);
@@ -191,11 +191,33 @@ export async function listDepartments() {
 }
 
 export function filterUsersForRole<T extends { role?: string | null }>(users: T[], requesterRole?: Role | null): T[] {
-  if (requesterRole === "admin") {
-    return users.filter((user) => String(user.role ?? "").toLowerCase() !== "super_admin");
+  const requester = String(requesterRole ?? "")
+    .trim()
+    .toLowerCase();
+
+  if (!requester || requester === "super_admin") {
+    return users;
   }
 
-  return users;
+  const isHiddenForRequester = (rawRole: string | null | undefined): boolean => {
+    const role = String(rawRole ?? "")
+      .trim()
+      .toLowerCase();
+    if (requester === "admin") {
+      return role === "super_admin";
+    }
+    // CSG, governor (incl. legacy), cashier — hide admin and super admin accounts
+    if (
+      requester === "csg_president" ||
+      requester === "cashier" ||
+      isGovernorRole(requester)
+    ) {
+      return role === "super_admin" || role === "admin";
+    }
+    return false;
+  };
+
+  return users.filter((user) => !isHiddenForRequester(user.role));
 }
 
 export async function listUsers(requesterRole?: Role | null) {
@@ -218,14 +240,22 @@ export async function listUsers(requesterRole?: Role | null) {
   return filterUsersForRole(rows as Array<{ role?: string | null }>, requesterRole);
 }
 
+const ASSIGNABLE_ROLES: Role[] = [
+  "super_admin",
+  "admin",
+  "csg_president",
+  GOVERNOR_ROLE,
+  "cashier",
+];
+
 export async function updateUserById(userId: number, payload: UpdateUserPayload): Promise<ServiceResult> {
-  const { fullName, username, password } = payload;
-  if (!fullName && !username && !password) {
+  const { fullName, username, password, role: rawRole, department } = payload;
+  if (!fullName && !username && !password && rawRole === undefined) {
     return { success: false, status: 400, message: "Nothing to update." };
   }
 
   const [existingRows] = await pool.execute<RowDataPacket[]>(
-    `SELECT id FROM users WHERE id = ? LIMIT 1`,
+    `SELECT id, role, department_id FROM users WHERE id = ? LIMIT 1`,
     [userId],
   );
   if (existingRows.length === 0) {
@@ -242,8 +272,15 @@ export async function updateUserById(userId: number, payload: UpdateUserPayload)
     }
   }
 
+  const role =
+    rawRole !== undefined && isGovernorRole(rawRole) ? GOVERNOR_ROLE : rawRole;
+
+  if (role !== undefined && !ASSIGNABLE_ROLES.includes(role)) {
+    return { success: false, status: 400, message: "Invalid role." };
+  }
+
   const updates: string[] = [];
-  const values: Array<string | number> = [];
+  const values: Array<string | number | null> = [];
 
   if (fullName !== undefined) {
     updates.push("full_name = ?");
@@ -259,6 +296,45 @@ export async function updateUserById(userId: number, payload: UpdateUserPayload)
     const hashedPassword = await bcrypt.hash(password, 10);
     updates.push("password = ?");
     values.push(hashedPassword);
+  }
+
+  if (role !== undefined) {
+    updates.push("role = ?");
+    values.push(role);
+
+    let departmentId: number | null = null;
+    let programId: number | null = null;
+
+    if (role === "csg_president") {
+      const resolved = await resolveCSGPresidentIds();
+      if ("success" in resolved) return resolved;
+      ({ departmentId, programId } = resolved);
+    } else if (isGovernorRole(role)) {
+      if (department?.trim()) {
+        const resolved = await resolveGovernorIds(department, "");
+        if ("success" in resolved) return resolved;
+        ({ departmentId, programId } = resolved);
+      } else {
+        const existingDept = existingRows[0].department_id;
+        departmentId = existingDept != null ? Number(existingDept) : null;
+        if (departmentId == null) {
+          return {
+            success: false,
+            status: 400,
+            message: "Governor must have a department. Select a college for this user.",
+          };
+        }
+        programId = null;
+      }
+    } else {
+      departmentId = null;
+      programId = null;
+    }
+
+    updates.push("department_id = ?");
+    values.push(departmentId);
+    updates.push("program_id = ?");
+    values.push(programId);
   }
 
   values.push(userId);
@@ -282,7 +358,7 @@ export async function getSuperAdminStats() {
       SUM(role = 'admin') AS total_admins,
       SUM(role = 'super_admin') AS total_super_admins,
       SUM(role = 'csg_president') AS total_csg_presidents,
-      SUM(role IN ('it_governor','cba_governor','ceas_governor','coc_governor','chm_governor')) AS total_governors
+      SUM(role IN ('governor','it_governor','cba_governor','ceas_governor','coc_governor','chm_governor')) AS total_governors
     FROM users
   `);
 

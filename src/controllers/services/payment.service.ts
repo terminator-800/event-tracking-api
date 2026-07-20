@@ -14,7 +14,7 @@ const SQL_USER_ENCODED_BY_NAME = `COALESCE(NULLIF(TRIM(u.full_name), ''), u.user
 type SessionKind = "whole" | "am" | "pm";
 
 function isPaymentAdminUnfiltered(role: Role): boolean {
-  return role === "admin" || role === "super_admin";
+  return role === "admin" || role === "super_admin" || role === "cashier";
 }
 
 /** Governors + CSG president only see fines / events they created (same as Manage Event / Attendance). */

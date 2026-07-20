@@ -3,6 +3,9 @@ export type Role =
   | "super_admin"
   | "admin"
   | "csg_president"
+  | "governor"
+  | "cashier"
+  /** @deprecated Prefer `governor` + department_id */
   | "it_governor"
   | "cba_governor"
   | "ceas_governor"
