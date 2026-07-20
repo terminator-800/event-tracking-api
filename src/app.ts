@@ -9,6 +9,9 @@ import paymentRoutes from "./routes/payment.routes";
 import academicPeriodRoutes from "./routes/academic-period.routes";
 import exportSecurityRoutes from "./routes/export-security.routes";
 import excelExportRoutes from "./routes/excel-export.routes";
+import eventConfigExportRoutes from "./routes/event-config-export.routes";
+import publicStudentAttendanceRoutes from "./routes/public-student-attendance.routes";
+import rbacRoutes from "./routes/rbac.routes";
 import { env } from "./config/env";
 
 const app = express();
@@ -29,6 +32,9 @@ app.use(paymentRoutes);
 app.use(academicPeriodRoutes);
 app.use(exportSecurityRoutes);
 app.use(excelExportRoutes);
+app.use(eventConfigExportRoutes);
+app.use(publicStudentAttendanceRoutes);
+app.use(rbacRoutes);
 
 app.get("/health", (_req, res) => {
   res.status(200).json({ status: "ok", message: "Event Tracking API is running" });
