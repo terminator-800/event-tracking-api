@@ -13,6 +13,7 @@ import { createPaymentsTable } from "./payments.model";
 import { createFineAdjustmentsTable } from "./fine_adjustments.model";
 import { createSystemExportSettingsTable } from "./system-export-settings.model";
 import { createExportAuditLogTable } from "./export-audit-log.model";
+import { createRolePermissionsTable } from "./role_permissions.model";
 
 export async function createTables(): Promise<void> {
   await createDepartmentsTable();           // no deps
@@ -30,4 +31,5 @@ export async function createTables(): Promise<void> {
   await createFineAdjustmentsTable();       // depends on fines, users
   await createSystemExportSettingsTable();  // depends on users
   await createExportAuditLogTable();        // depends on users
+  await createRolePermissionsTable();       // RBAC matrix
 }
