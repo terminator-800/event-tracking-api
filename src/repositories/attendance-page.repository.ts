@@ -253,6 +253,7 @@ export async function countAttendedStudents(
 export interface EventStudentRow extends RowDataPacket {
   student_pk: number;
   student_id: string;
+  rfid?: string | null;
   full_name: string;
   course_code: string;
   major: string | null;
@@ -288,6 +289,7 @@ export async function selectStudentsForEventDetail(
   const baseSql = `SELECT
       s.id AS student_pk,
       s.student_id AS student_id,
+      NULLIF(TRIM(s.rfid), '') AS rfid,
       ${SQL_STUDENT_FULL_NAME} AS full_name,
       p.course_code AS course_code,
       NULLIF(TRIM(p.major), '') AS major,
