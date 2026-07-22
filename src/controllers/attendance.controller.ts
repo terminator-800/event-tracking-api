@@ -567,6 +567,16 @@ public recordAttendance = async (req: Request, res: Response): Promise<void> => 
       });
       return;
 
+      res.status(200).json({
+        message: timeInOnly
+          ? `Attendance time in recorded successfully. Student marked Present (${slot} Time-In Only).`
+          : `Attendance in recorded successfully.`,
+        status: timeInOnly ? "present" : undefined,
+        attendanceKind: "in",
+        eventMode: timeInOnly ? "TIME_IN_ONLY" : "TIME_IN_OUT",
+      });
+      return;
+
     } else {
       if (timeOutDone) {
         res.status(409).json({
