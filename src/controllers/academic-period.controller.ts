@@ -5,14 +5,14 @@ import {
   createAcademicYearPeriods,
   deleteAcademicPeriod,
   getActiveAcademicPeriod,
-  listAcademicPeriods,
+  listAcademicPeriodsForSettings,
   updateAcademicPeriod,
 } from "./services/academic-period.service";
 
 export class AcademicPeriodController {
   async list(_req: Request, res: Response): Promise<void> {
     try {
-      const periods = await listAcademicPeriods();
+      const periods = await listAcademicPeriodsForSettings();
       res.status(200).json({ periods });
     } catch (error) {
       console.error("[AcademicPeriodController.list]", error);
