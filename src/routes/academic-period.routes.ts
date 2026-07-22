@@ -2,59 +2,62 @@ import { Router } from "express";
 import { AcademicPeriodController } from "../controllers/academic-period.controller";
 import { authMiddleware } from "../middlewares/auth.middleware";
 import { roleMiddleware } from "../middlewares/role.middleware";
+import { permissionMiddleware } from "../middlewares/permission.middleware";
+
+import { OPERATIONAL_ROLES } from "../utils/roles";
 
 const router = Router();
 const controller = new AcademicPeriodController();
 
-const operationalRoles = [
-  "admin",
-  "csg_president",
-  "it_governor",
-  "cba_governor",
-  "ceas_governor",
-  "coc_governor",
-  "chm_governor",
-] as const;
-
 router.get(
   "/academic-periods/active",
   authMiddleware,
-  roleMiddleware("super_admin", ...operationalRoles),
+  roleMiddleware(...OPERATIONAL_ROLES),
   (req, res) => controller.getActive(req, res),
 );
 
 router.get(
   "/academic-periods",
   authMiddleware,
-  roleMiddleware("super_admin"),
+  roleMiddleware(...OPERATIONAL_ROLES),
+  permissionMiddleware(
+    "nav.settings.school_year",
+    "action.academic_period.manage",
+    "nav.settings.backup",
+    "action.backup.download",
+  ),
   (req, res) => controller.list(req, res),
 );
 
 router.post(
   "/academic-periods",
   authMiddleware,
-  roleMiddleware("super_admin"),
+  roleMiddleware(...OPERATIONAL_ROLES),
+  permissionMiddleware("action.academic_period.manage"),
   (req, res) => controller.create(req, res),
 );
 
 router.patch(
   "/academic-periods/:id",
   authMiddleware,
-  roleMiddleware("super_admin"),
+  roleMiddleware(...OPERATIONAL_ROLES),
+  permissionMiddleware("action.academic_period.manage"),
   (req, res) => controller.update(req, res),
 );
 
 router.post(
   "/academic-periods/:id/activate",
   authMiddleware,
-  roleMiddleware("super_admin"),
+  roleMiddleware(...OPERATIONAL_ROLES),
+  permissionMiddleware("action.academic_period.manage"),
   (req, res) => controller.activate(req, res),
 );
 
 router.delete(
   "/academic-periods/:id",
   authMiddleware,
-  roleMiddleware("super_admin"),
+  roleMiddleware(...OPERATIONAL_ROLES),
+  permissionMiddleware("action.academic_period.manage"),
   (req, res) => controller.remove(req, res),
 );
 
