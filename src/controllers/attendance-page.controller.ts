@@ -156,13 +156,15 @@ export class AttendancePageController {
       const absent = st === "upcoming" ? 0 : Math.max(0, total - attendedCount);
 
       const studentRows = await selectStudentsForEventDetail(eventId, scopeDept);
+      const timeInOnly =
+        String(eventRow.event_mode ?? "").trim().toUpperCase() === "TIME_IN_ONLY";
       const students = studentRows.map((s) => {
         const ok = studentAttended(eventRow.duration, s);
         const fine = Number(s.fine_total ?? 0);
         const amIn = sqlTimeTo12Hour(s.am_time_in);
-        const amOut = sqlTimeTo12Hour(s.am_time_out);
+        const amOut = timeInOnly ? null : sqlTimeTo12Hour(s.am_time_out);
         const pmIn = sqlTimeTo12Hour(s.pm_time_in);
-        const pmOut = sqlTimeTo12Hour(s.pm_time_out);
+        const pmOut = timeInOnly ? null : sqlTimeTo12Hour(s.pm_time_out);
         const ylRaw = s.year_level;
         const yearLevelParsed =
           ylRaw != null && ylRaw !== "" && Number.isFinite(Number(ylRaw)) ? Number(ylRaw) : null;
@@ -179,9 +181,9 @@ export class AttendancePageController {
           fromServer: true,
           penalty: fine,
           amIn: amIn ?? "No record",
-          amOut: amOut ?? "No record",
+          amOut: timeInOnly ? "—" : amOut ?? "No record",
           pmIn: pmIn ?? "No record",
-          pmOut: pmOut ?? "No record",
+          pmOut: timeInOnly ? "—" : pmOut ?? "No record",
         };
       });
 
@@ -198,6 +200,8 @@ export class AttendancePageController {
           finePerAbsence: Number(eventRow.fine_amount ?? 0),
           venue: eventRow.venue,
           duration: eventRow.duration,
+          event_mode: timeInOnly ? "TIME_IN_ONLY" : "TIME_IN_OUT",
+          time_in_only: timeInOnly,
           audiences: eventRow.audiences,
           isAllDepartments: Number(eventRow.is_all_departments) === 1,
           am_time_in: eventRow.am_time_in,

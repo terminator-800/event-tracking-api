@@ -8,9 +8,61 @@ import {
   findStudentEnrollmentContext,
   resolveStudentPkByPublicId,
   EventHistoryDbRow,
+  StudentDashboardCreatorScope,
 } from "../repositories/student-dashboard.repository";
 import { programToCourseFilterValue } from "../utils/programCourseFilter";
 import { sqlTimeTo12Hour } from "../utils/sqlTime";
+import { isCsgCashierRole, isDeptCashierRole } from "../utils/roles";
+
+function resolveStudentDashboardScope(
+  role: Role,
+  userId: number | undefined,
+  departmentId: number | null,
+): {
+  departmentFilter: number | null;
+  creatorScope: StudentDashboardCreatorScope;
+  allowWithoutDepartment: boolean;
+} {
+  const isAdmin = role === "admin" || role === "super_admin";
+  const isCsgPresident = role === "csg_president";
+  const isCsgCashier = isCsgCashierRole(role, departmentId);
+  const isDeptCashier = isDeptCashierRole(role, departmentId);
+
+  if (isAdmin) {
+    return {
+      departmentFilter: null,
+      creatorScope: {},
+      allowWithoutDepartment: true,
+    };
+  }
+  if (isCsgPresident) {
+    return {
+      departmentFilter: null,
+      creatorScope: { createdByUserId: userId ?? null },
+      allowWithoutDepartment: true,
+    };
+  }
+  if (isCsgCashier) {
+    return {
+      departmentFilter: null,
+      creatorScope: { csgPresidentCreatorsOnly: true },
+      allowWithoutDepartment: true,
+    };
+  }
+  if (isDeptCashier) {
+    return {
+      departmentFilter: departmentId,
+      creatorScope: {},
+      allowWithoutDepartment: false,
+    };
+  }
+  // Governors: own events within college
+  return {
+    departmentFilter: departmentId,
+    creatorScope: { createdByUserId: userId ?? null },
+    allowWithoutDepartment: false,
+  };
+}
 
 export interface DashboardStudentListItem {
   id: string;
@@ -28,6 +80,8 @@ export interface DashboardEventHistoryItem {
   name: string;
   date: string;
   sessionType: "Whole day" | "AM Only" | "PM Only";
+  eventMode: "TIME_IN_OUT" | "TIME_IN_ONLY";
+  timeInOnly: boolean;
   attended: boolean;
   amTimeIn?: string | null;
   amTimeOut?: string | null;
@@ -58,10 +112,18 @@ export class StudentDashboardController {
     return "AM Only";
   }
 
+  private isTimeInOnlyMode(mode: string | null | undefined): boolean {
+    return String(mode ?? "").trim().toUpperCase() === "TIME_IN_ONLY";
+  }
+
   private mapHistoryRow(row: EventHistoryDbRow): DashboardEventHistoryItem {
     const sessionType = this.durationToSessionType(row.duration);
     const attended = row.attended === 1;
     const finePhp = row.fine_php != null ? Number(row.fine_php) : 0;
+    const timeInOnly = this.isTimeInOnlyMode(row.event_mode);
+    const eventMode: "TIME_IN_OUT" | "TIME_IN_ONLY" = timeInOnly
+      ? "TIME_IN_ONLY"
+      : "TIME_IN_OUT";
 
     if (sessionType !== "Whole day") {
       const hasAmData = row.am_time_in != null || row.am_time_out != null;
@@ -77,9 +139,12 @@ export class StudentDashboardController {
         name: row.name,
         date: row.date,
         sessionType,
+        eventMode,
+        timeInOnly,
         attended,
         timeIn: sqlTimeTo12Hour(ti),
-        timeOut: sqlTimeTo12Hour(to),
+        // Time-In Only: no time-out column applies
+        timeOut: timeInOnly ? null : sqlTimeTo12Hour(to),
         finePhp,
       };
     }
@@ -88,11 +153,13 @@ export class StudentDashboardController {
       name: row.name,
       date: row.date,
       sessionType: "Whole day",
+      eventMode,
+      timeInOnly,
       attended,
       amTimeIn: sqlTimeTo12Hour(row.am_time_in),
-      amTimeOut: sqlTimeTo12Hour(row.am_time_out),
+      amTimeOut: timeInOnly ? null : sqlTimeTo12Hour(row.am_time_out),
       pmTimeIn: sqlTimeTo12Hour(row.pm_time_in),
-      pmTimeOut: sqlTimeTo12Hour(row.pm_time_out),
+      pmTimeOut: timeInOnly ? null : sqlTimeTo12Hour(row.pm_time_out),
       finePhp,
     };
   }
@@ -143,23 +210,21 @@ export class StudentDashboardController {
         return;
       }
 
-      // Admins and super admins see institution-wide stats; governors and CSG president only see stats for events they created.
-      const isAdminFullAccess = role === "admin" || role === "super_admin";
-
-      const adminStyleDepartmentBypass: Role[] = ["admin", "super_admin", "csg_president"];
-      if (!adminStyleDepartmentBypass.includes(role) && (departmentId == null || departmentId === undefined)) {
+      const scope = resolveStudentDashboardScope(role, userId, departmentId);
+      if (!scope.allowWithoutDepartment && (departmentId == null || departmentId === undefined)) {
         res.status(200).json({ students: [] });
         return;
       }
-      const departmentFilter = adminStyleDepartmentBypass.includes(role) ? null : departmentId!;
 
-      if (!isAdminFullAccess && userId == null) {
+      if (role !== "admin" && role !== "super_admin" && userId == null) {
         res.status(401).json({ message: "Unauthorized" });
         return;
       }
 
-      const createdByFilter = isAdminFullAccess ? null : userId!;
-      const rows = await findStudentsWithAttendanceStats(departmentFilter, createdByFilter);
+      const rows = await findStudentsWithAttendanceStats(
+        scope.departmentFilter,
+        scope.creatorScope,
+      );
       const students = rows.map((r) => {
         const total = Number(r.total_events) || 0;
         const att = Number(r.events_attended) || 0;
@@ -204,7 +269,7 @@ export class StudentDashboardController {
         return;
       }
 
-      const createdByFilter = isAdminFullAccess ? null : userId!;
+      const scope = resolveStudentDashboardScope(role, userId, departmentId);
 
       const studentId = String(req.params.studentId ?? "").trim();
       if (!studentId) {
@@ -224,8 +289,7 @@ export class StudentDashboardController {
         return;
       }
 
-      const adminStyleDepartmentBypass: Role[] = ["admin", "super_admin", "csg_president"];
-      if (!adminStyleDepartmentBypass.includes(role) && ctx.program_id > 0) {
+      if (!scope.allowWithoutDepartment && ctx.program_id > 0) {
         const [progRows] = await pool.execute<RowDataPacket[]>(
           `SELECT department_id FROM programs WHERE id = ? LIMIT 1`,
           [ctx.program_id],
@@ -241,7 +305,7 @@ export class StudentDashboardController {
         pk,
         ctx.program_id,
         ctx.year_level,
-        createdByFilter,
+        scope.creatorScope,
       );
       const eventHistory = rawHistory.map((row) => this.mapHistoryRow(row));
 

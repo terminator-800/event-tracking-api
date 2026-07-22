@@ -1,6 +1,7 @@
 import { RowDataPacket } from "mysql2";
 import { pool } from "../config/db";
 import { Role } from "../types/express";
+import { isCsgCashierRole, isGovernorRole, SQL_CSG_PRESIDENT_CREATOR } from "../utils/roles";
 import { SQL_STUDENT_FULL_NAME, SQL_STUDENT_YEAR_LEVEL } from "../utils/studentDisplaySql";
 import {
   buildEligibleStudentsQuery,
@@ -19,6 +20,7 @@ export interface ScopedEventRow extends RowDataPacket {
   status: string;
   fine_amount: string | number;
   is_all_departments: number;
+  event_mode?: string | null;
   am_time_in: string | null;
   am_time_out: string | null;
   pm_time_in: string | null;
@@ -121,10 +123,35 @@ export async function selectScopedEvents(userRole: Role, userId: number): Promis
     return rows;
   }
 
-  const deptId = await getUserDepartmentIdForAttendance(userId);
+  // CSG cashiers (and legacy cashier with no department): events created by CSG presidents.
+  const deptIdForCashier = await getUserDepartmentIdForAttendance(userId);
+  if (isCsgCashierRole(userRole, deptIdForCashier)) {
+    const [rows] = await pool.execute<ScopedEventRow[]>(
+      `SELECT
+        e.*,
+        ${audienceAggSql}
+      FROM events e
+      LEFT JOIN event_audiences ea ON ea.event_id = e.id
+      LEFT JOIN departments d      ON d.id = ea.department_id
+      LEFT JOIN programs p         ON p.id = ea.program_id
+      WHERE ${SQL_CSG_PRESIDENT_CREATOR}${periodClause}
+      GROUP BY e.id
+      ORDER BY e.date DESC`,
+      periodParams,
+    );
+    return rows;
+  }
+
+  const deptId = deptIdForCashier;
   if (deptId == null) {
     return [];
   }
+
+  // Dept cashiers: college audience (any creator). Governors: only events they created.
+  const creatorSql = isGovernorRole(userRole) ? " AND e.created_by = ?" : "";
+  const params: (number | string)[] = [deptId, deptId];
+  if (isGovernorRole(userRole)) params.push(userId);
+  params.push(...periodParams);
 
   const [rows] = await pool.execute<ScopedEventRow[]>(
     `SELECT
@@ -136,10 +163,10 @@ export async function selectScopedEvents(userRole: Role, userId: number): Promis
     LEFT JOIN departments d      ON d.id = ea.department_id
     LEFT JOIN programs p         ON p.id = ea.program_id
     WHERE (e.is_all_departments = 1 OR ea.department_id = ?)
-      AND e.created_by = ?${periodClause}
+      ${creatorSql}${periodClause}
     GROUP BY e.id
     ORDER BY e.date DESC`,
-    [deptId, deptId, userId, ...periodParams],
+    params,
   );
   return rows;
 }
@@ -253,6 +280,7 @@ export async function countAttendedStudents(
 export interface EventStudentRow extends RowDataPacket {
   student_pk: number;
   student_id: string;
+  rfid?: string | null;
   full_name: string;
   course_code: string;
   major: string | null;
@@ -268,26 +296,45 @@ export interface EventStudentRow extends RowDataPacket {
 export async function selectStudentsForEventDetail(
   eventId: number,
   scopeDepartmentId: AttendanceRosterDepartmentScope = null,
+  /** When set (e.g. semester backup), use this period's enrollments instead of the active period. */
+  academicPeriodId: number | null = null,
 ): Promise<EventStudentRow[]> {
-  const activePeriod = await getActiveAcademicPeriod();
-  const enrollmentJoin = sqlLatestEnrollmentLeftJoin(activePeriod?.id ?? null);
+  const periodId =
+    academicPeriodId != null && Number.isFinite(Number(academicPeriodId))
+      ? Number(academicPeriodId)
+      : (await getActiveAcademicPeriod())?.id ?? null;
+  const enrollmentJoin = sqlLatestEnrollmentLeftJoin(periodId);
   const [evRows]: any = await pool.execute(
-    `SELECT is_all_departments FROM events WHERE id = ? LIMIT 1`,
+    `SELECT is_all_departments, event_mode FROM events WHERE id = ? LIMIT 1`,
     [eventId],
   );
   if (!evRows.length) return [];
   const isAll = Number(evRows[0].is_all_departments) === 1;
+  const timeInOnly =
+    String(evRows[0].event_mode ?? "").trim().toUpperCase() === "TIME_IN_ONLY";
   const audienceYearLevel = await getEventAudienceYearLevel(eventId);
   const { sql: eligibleSql, params: eligibleParams } = buildEligibleStudentsQuery(
     eventId,
     isAll,
     audienceYearLevel,
-    activePeriod?.id ?? null,
+    periodId,
   );
+
+  const fineTotalSql = timeInOnly
+    ? `(SELECT COALESCE(SUM(f.amount), 0) FROM fines f
+        WHERE f.student_id = s.id AND f.event_id = ?
+          AND f.reason NOT IN (
+            'Absent AM Time Out',
+            'Missed AM Time Out',
+            'Absent PM Time Out',
+            'Missed PM Time Out'
+          )) AS fine_total`
+    : `(SELECT COALESCE(SUM(f.amount), 0) FROM fines f WHERE f.student_id = s.id AND f.event_id = ?) AS fine_total`;
 
   const baseSql = `SELECT
       s.id AS student_pk,
       s.student_id AS student_id,
+      NULLIF(TRIM(s.rfid), '') AS rfid,
       ${SQL_STUDENT_FULL_NAME} AS full_name,
       p.course_code AS course_code,
       NULLIF(TRIM(p.major), '') AS major,
@@ -297,7 +344,7 @@ export async function selectStudentsForEventDetail(
       a.am_time_out,
       a.pm_time_in,
       a.pm_time_out,
-      (SELECT COALESCE(SUM(f.amount), 0) FROM fines f WHERE f.student_id = s.id AND f.event_id = ?) AS fine_total
+      ${fineTotalSql}
      FROM students s
      ${enrollmentJoin}
      ${SQL_LATEST_PROGRAM_LEFT_JOIN}
@@ -327,6 +374,8 @@ export function userCanAccessEvent(
   departmentId: number | null,
 ): boolean {
   if (ADMIN_ROLES.includes(userRole)) return true;
+  // CSG Cashier is already limited to CSG President events in selectScopedEvents.
+  if (isCsgCashierRole(userRole, departmentId)) return true;
   if (!departmentId) return false;
   if (Number(eventRow.is_all_departments) === 1) return true;
   const aud = parseAudienceEntries(eventRow.audiences as unknown);
