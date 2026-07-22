@@ -5,31 +5,38 @@ import { sqlActivePeriodEventsClause } from "../utils/studentEligibilitySql";
 import { ResultSetHeader } from "mysql2";
 import { Role } from "../types/express";
 import {
-  hashEventPassword,
   MIN_EVENT_PASSWORD_LENGTH,
   parseAttendancePasswordFromBody,
+  prepareEventPasswordStorage,
+  revealStoredPassword,
 } from "./services/event-password.service";
 import { sanitizeEventRow, sanitizeEventRows } from "../utils/eventResponse";
+import { newEventUuid } from "../models/events.model";
+import {
+  ALL_GOVERNOR_ROLE_VALUES,
+  isCsgCashierRole,
+  isGovernorRole,
+  SQL_CSG_PRESIDENT_CREATOR,
+} from "../utils/roles";
 
-/** Frontend sends this when CEAS governor picks "All Majors" — audience = every program in that department. */
+/** Frontend sends this when a governor picks "All Majors" for CEAS — audience = every program in that department. */
 const CEAS_GOVERNOR_ALL_PROGRAMS_SENTINEL = "__CEAS_GOVERNOR_ALL_PROGRAMS__";
 
-/** Frontend sends this when CBA governor picks "All Majors" — audience = whole BSBA cohort (department scope). */
+/** Frontend sends this when a governor picks "All Majors" for CBA — audience = whole BSBA cohort (department scope). */
 const CBA_GOVERNOR_ALL_BSBA_SENTINEL = "__CBA_GOVERNOR_ALL_BSBA__";
 
-const GOVERNOR_ROLES: Role[] = [
-  "it_governor",
-  "cba_governor",
-  "ceas_governor",
-  "coc_governor",
-  "chm_governor",
-];
+type EventMode = "TIME_IN_OUT" | "TIME_IN_ONLY";
 
 interface CreateEventBody {
   name: string;
   date: string;
   venue: string;
   duration: "Whole Day" | "Half Day" | "AM Only" | "PM Only";
+  /** Preferred: TIME_IN_OUT | TIME_IN_ONLY */
+  event_mode?: EventMode;
+  /** Alternate boolean flags from older/alternate clients */
+  time_in_only?: boolean;
+  timeInOnly?: boolean;
   amTimeIn?: string;
   amTimeOut?: string;
   pmTimeIn?: string;
@@ -59,6 +66,9 @@ interface UpdateEventBody {
   date: string;
   venue: string;
   duration: "Whole Day" | "Half Day" | "AM Only" | "PM Only";
+  event_mode?: EventMode;
+  time_in_only?: boolean;
+  timeInOnly?: boolean;
   am_time_in?: string | null;
   am_time_out?: string | null;
   pm_time_in?: string | null;
@@ -126,6 +136,23 @@ private resolveTimings(body: CreateEventBody) {
   };
 }
 
+private resolveEventMode(body: {
+  event_mode?: unknown;
+  time_in_only?: unknown;
+  timeInOnly?: unknown;
+}): EventMode {
+  const mode = String(body.event_mode ?? "").trim().toUpperCase();
+  if (mode === "TIME_IN_ONLY") return "TIME_IN_ONLY";
+  if (mode === "TIME_IN_OUT") return "TIME_IN_OUT";
+  if (body.time_in_only === true || body.time_in_only === 1 || body.time_in_only === "1") {
+    return "TIME_IN_ONLY";
+  }
+  if (body.timeInOnly === true || body.timeInOnly === 1 || body.timeInOnly === "1") {
+    return "TIME_IN_ONLY";
+  }
+  return "TIME_IN_OUT";
+}
+
 async createEvent(req: Request, res: Response): Promise<void> {
   const createdBy: number = req.user?.id!;
 
@@ -164,7 +191,8 @@ async createEvent(req: Request, res: Response): Promise<void> {
     });
     return;
   }
-  const attendancePasswordHash = await hashEventPassword(attendancePassword);
+  const { hash: attendancePasswordHash, encrypted: attendancePasswordEncrypted } =
+    await prepareEventPasswordStorage(attendancePassword);
 
   const isAllDepartments = course_code === "All Departments";
 
@@ -180,6 +208,7 @@ async createEvent(req: Request, res: Response): Promise<void> {
   }
 
   const { amIn, amOut, pmIn, pmOut, graceAmIn, graceAmOut, gracePmIn, gracePmOut } = this.resolveTimings(req.body);
+  const eventMode = this.resolveEventMode(req.body);
 
   let audiencesToInsert: EventAudienceInsertRow[] = [];
   let resolvedDepartmentId: number | null = null;
@@ -190,7 +219,7 @@ async createEvent(req: Request, res: Response): Promise<void> {
 
     if (
       courseKey === CEAS_GOVERNOR_ALL_PROGRAMS_SENTINEL &&
-      userRole === "ceas_governor" &&
+      isGovernorRole(userRole) &&
       userDepartmentId != null &&
       Number.isFinite(Number(userDepartmentId))
     ) {
@@ -198,7 +227,7 @@ async createEvent(req: Request, res: Response): Promise<void> {
       audiencesToInsert = [{ departmentId: resolvedDepartmentId, programId: null, yearLevel: parsedYearLevel }];
     } else if (
       courseKey === CBA_GOVERNOR_ALL_BSBA_SENTINEL &&
-      userRole === "cba_governor" &&
+      isGovernorRole(userRole) &&
       userDepartmentId != null &&
       Number.isFinite(Number(userDepartmentId))
     ) {
@@ -210,7 +239,7 @@ async createEvent(req: Request, res: Response): Promise<void> {
         userDepartmentId != null && Number.isFinite(Number(userDepartmentId))
           ? Number(userDepartmentId)
           : null;
-      const isGovernor = userRole != null && GOVERNOR_ROLES.includes(userRole);
+      const isGovernor = isGovernorRole(userRole);
 
       let programRow: { id: number; department_id: number } | null = null;
 
@@ -336,16 +365,23 @@ async createEvent(req: Request, res: Response): Promise<void> {
   try {
     await connection.beginTransaction();
 
+    const eventUuid = newEventUuid();
+    // Master events point master_event_uuid at themselves for stable CSG↔governor linking.
+    const masterEventUuid = eventUuid;
+
     const [eventResult] = await connection.execute<ResultSetHeader>(
       `INSERT INTO events (
-        name, date, venue, duration,
+        event_uuid, event_version, master_event_uuid,
+        name, date, venue, duration, event_mode,
         am_time_in, am_grace_in, am_time_out, am_grace_out,
         pm_time_in, pm_grace_in, pm_time_out, pm_grace_out,
         is_mandatory, is_all_departments,
-        status, audience_notes, fine_amount, attendance_password_hash, created_by, academic_period_id
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        status, audience_notes, fine_amount, attendance_password_hash, attendance_password_encrypted, created_by, academic_period_id
+      ) VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
-        name, date, venue, duration,
+        eventUuid,
+        masterEventUuid,
+        name, date, venue, duration, eventMode,
         amIn,  graceAmIn,  amOut, graceAmOut,
         pmIn,  gracePmIn,  pmOut, gracePmOut,
         isMandatory ? 1 : 0,
@@ -354,6 +390,7 @@ async createEvent(req: Request, res: Response): Promise<void> {
         audienceNotes || null,
         fineAmount ?? 0,
         attendancePasswordHash,
+        attendancePasswordEncrypted,
         createdBy,
         academicPeriodId,
       ]
@@ -468,6 +505,7 @@ async updateEvent(req: Request, res: Response): Promise<void> {
     const pmOut = this.normalizeTimeInput(body.pm_time_out ?? null);
     const graceAmIn = this.resolveGracePeriod(body.am_grace_in);
     const gracePmIn = this.resolveGracePeriod(body.pm_grace_in);
+    const eventMode = this.resolveEventMode(body);
     const audienceNotes = body.audience_notes != null ? String(body.audience_notes) : null;
     const fineAmountRaw = body.fine_amount;
     const fineAmount = Number.isFinite(Number(fineAmountRaw)) ? Math.max(0, Number(fineAmountRaw)) : 0;
@@ -479,6 +517,7 @@ async updateEvent(req: Request, res: Response): Promise<void> {
          date = ?,
          venue = ?,
          duration = ?,
+         event_mode = ?,
          am_time_in = ?,
          am_time_out = ?,
          pm_time_in = ?,
@@ -493,6 +532,7 @@ async updateEvent(req: Request, res: Response): Promise<void> {
         date,
         venue,
         duration,
+        eventMode,
         amIn,
         amOut,
         pmIn,
@@ -513,6 +553,126 @@ async updateEvent(req: Request, res: Response): Promise<void> {
     res.status(200).json({ message: "Event updated successfully.", eventId });
   } catch (error) {
     console.error("[updateEvent] Error:", error);
+    res.status(500).json({ message: "Internal server error." });
+  }
+}
+
+/**
+ * Narrow update for live events: change scheduled time-out only.
+ * Lets staff end a session early so students can time out without waiting for the original end time.
+ */
+async updateEventTimeout(req: Request, res: Response): Promise<void> {
+  const userId = req.user?.id;
+  const userRole = req.user?.role;
+  const userDepartmentId = req.user?.department_id ?? null;
+
+  if (!userId) {
+    res.status(401).json({ message: "Unauthorized" });
+    return;
+  }
+
+  const eventId = Number(req.params.id);
+  if (!Number.isFinite(eventId) || eventId <= 0) {
+    res.status(400).json({ message: "Invalid event id." });
+    return;
+  }
+
+  const body = (req.body ?? {}) as {
+    am_time_out?: string | null;
+    pm_time_out?: string | null;
+    amTimeOut?: string | null;
+    pmTimeOut?: string | null;
+  };
+
+  const hasAmOut = Object.prototype.hasOwnProperty.call(body, "am_time_out")
+    || Object.prototype.hasOwnProperty.call(body, "amTimeOut");
+  const hasPmOut = Object.prototype.hasOwnProperty.call(body, "pm_time_out")
+    || Object.prototype.hasOwnProperty.call(body, "pmTimeOut");
+
+  if (!hasAmOut && !hasPmOut) {
+    res.status(400).json({ message: "Provide am_time_out and/or pm_time_out." });
+    return;
+  }
+
+  try {
+    const [rows]: any = await pool.execute(
+      `SELECT 
+        e.id, e.status, e.is_all_departments,
+        e.am_time_in, e.pm_time_in, e.am_time_out, e.pm_time_out,
+        (SELECT MAX(ea.department_id) FROM event_audiences ea WHERE ea.event_id = e.id) AS department_id
+       FROM events e
+       WHERE e.id = ?`,
+      [eventId]
+    );
+
+    if (!rows.length) {
+      res.status(404).json({ message: "Event not found." });
+      return;
+    }
+
+    const event = rows[0];
+    const statusKey = String(event.status ?? "").trim().toLowerCase();
+    if (statusKey === "completed") {
+      res.status(403).json({ message: "Completed events cannot change time-out." });
+      return;
+    }
+    if (statusKey !== "ongoing" && statusKey !== "active") {
+      res.status(403).json({
+        message: "Time-out can only be adjusted while the event is Ongoing. Edit the full schedule for Upcoming events.",
+      });
+      return;
+    }
+
+    const adminRoles: Role[] = ["admin", "super_admin", "csg_president"];
+    if (!adminRoles.includes(userRole!)) {
+      const isAllDepartments = Number(event.is_all_departments) === 1;
+      if (!isAllDepartments) {
+        if (!userDepartmentId || Number(event.department_id) !== Number(userDepartmentId)) {
+          res.status(403).json({ message: "Access denied for editing this event." });
+          return;
+        }
+      }
+    }
+
+    const nextAmOut = hasAmOut
+      ? this.normalizeTimeInput(body.am_time_out ?? body.amTimeOut ?? null)
+      : this.normalizeTimeInput(event.am_time_out);
+    const nextPmOut = hasPmOut
+      ? this.normalizeTimeInput(body.pm_time_out ?? body.pmTimeOut ?? null)
+      : this.normalizeTimeInput(event.pm_time_out);
+
+    const amIn = this.normalizeTimeInput(event.am_time_in);
+    const pmIn = this.normalizeTimeInput(event.pm_time_in);
+
+    if (nextAmOut && amIn && nextAmOut <= amIn) {
+      res.status(400).json({ message: "AM time-out must be after AM time-in." });
+      return;
+    }
+    if (nextPmOut && pmIn && nextPmOut <= pmIn) {
+      res.status(400).json({ message: "PM time-out must be after PM time-in." });
+      return;
+    }
+
+    const [result] = await pool.execute<ResultSetHeader>(
+      `UPDATE events
+       SET am_time_out = ?, pm_time_out = ?
+       WHERE id = ?`,
+      [nextAmOut, nextPmOut, eventId]
+    );
+
+    if (result.affectedRows === 0) {
+      res.status(404).json({ message: "Event not found." });
+      return;
+    }
+
+    res.status(200).json({
+      message: "Event time-out updated successfully.",
+      eventId,
+      am_time_out: nextAmOut,
+      pm_time_out: nextPmOut,
+    });
+  } catch (error) {
+    console.error("[updateEventTimeout] Error:", error);
     res.status(500).json({ message: "Internal server error." });
   }
 }
@@ -553,7 +713,12 @@ async deleteEvent(req: Request, res: Response): Promise<void> {
 
     const event = rows[0];
     const statusKey = String(event.status ?? "").trim().toLowerCase();
-    if (statusKey === "completed" || statusKey === "ongoing" || statusKey === "active") {
+    const isSuperAdmin = userRole === "super_admin";
+    // Super admin may delete any event; other roles cannot delete ongoing/completed.
+    if (
+      !isSuperAdmin &&
+      (statusKey === "completed" || statusKey === "ongoing" || statusKey === "active")
+    ) {
       res.status(403).json({ message: "Completed or ongoing events cannot be deleted." });
       return;
     }
@@ -665,6 +830,36 @@ try {
     );
     events = rows;
 
+  } else if (isCsgCashierRole(userRole, req.user?.department_id)) {
+    // Same event pool as CSG President desk: events created by CSG President accounts.
+    const [rows]: any = await pool.execute(
+      `SELECT
+        e.*,
+        u.username AS created_by_username,
+        JSON_ARRAYAGG(
+          JSON_OBJECT(
+            'department_id',   ea.department_id,
+            'department_name', d.name,
+            'department_code', d.code,
+            'program_id',      ea.program_id,
+            'course_code',     p.course_code,
+            'course_name',     p.course_name,
+            'major',           NULLIF(TRIM(p.major), ''),
+            'year_level',      ea.year_level
+          )
+        ) AS audiences
+      FROM events e
+      LEFT JOIN users u            ON u.id  = e.created_by
+      LEFT JOIN event_audiences ea ON ea.event_id = e.id
+      LEFT JOIN departments d      ON d.id = ea.department_id
+      LEFT JOIN programs p         ON p.id = ea.program_id
+      WHERE ${SQL_CSG_PRESIDENT_CREATOR}${periodClause}
+      GROUP BY e.id
+      ORDER BY e.date DESC`,
+      periodParams,
+    );
+    events = rows;
+
   } else {
     const [userRows]: any = await pool.execute(
       `SELECT department_id FROM users WHERE id = ? LIMIT 1`,
@@ -677,6 +872,12 @@ try {
     }
 
     const departmentId = userRows[0].department_id;
+    // Governors: only their own events. Dept cashiers: college audience (any creator).
+    const filterByCreator = isGovernorRole(userRole);
+    const creatorSql = filterByCreator ? " AND e.created_by = ?" : "";
+    const params: (number | string)[] = [departmentId, departmentId];
+    if (filterByCreator) params.push(userId);
+    params.push(...periodParams);
 
     const [rows]: any = await pool.execute(
       `SELECT
@@ -701,10 +902,10 @@ try {
       LEFT JOIN departments d      ON d.id = ea.department_id
       LEFT JOIN programs p         ON p.id = ea.program_id
       WHERE (e.is_all_departments = 1 OR ea.department_id = ?)
-        AND e.created_by = ?${periodClause}
+        ${creatorSql}${periodClause}
       GROUP BY e.id
       ORDER BY e.date DESC`,
-      [departmentId, departmentId, userId, ...periodParams],
+      params,
     );
     events = rows;
   }
@@ -729,6 +930,39 @@ async getCurrentEvent(req: Request, res: Response): Promise<void> {
     const periodParams = activePeriod ? [activePeriod.id] : [];
 
     console.log("[getCurrentEvent] user:", { role, departmentId, activePeriodId: activePeriod?.id ?? null });
+
+    // Admin / super_admin: every upcoming & ongoing event (all creators / departments).
+    if (role === "admin" || role === "super_admin") {
+      const [rows]: any = await pool.execute(
+        `SELECT
+          e.*,
+          u.username AS created_by_username,
+          JSON_ARRAYAGG(
+            JSON_OBJECT(
+              'department_id',   ea.department_id,
+              'department_name', d.name,
+              'department_code', d.code,
+              'program_id',      ea.program_id,
+              'course_code',     p.course_code,
+              'course_name',     p.course_name,
+              'major',           NULLIF(TRIM(p.major), ''),
+              'year_level',      ea.year_level
+            )
+          ) AS audiences
+        FROM events e
+        LEFT JOIN users u            ON u.id  = e.created_by
+        LEFT JOIN event_audiences ea ON ea.event_id = e.id
+        LEFT JOIN departments d      ON d.id = ea.department_id
+        LEFT JOIN programs p         ON p.id = ea.program_id
+        WHERE e.status IN ('Upcoming', 'Ongoing')
+        ${periodClause}
+        GROUP BY e.id
+        ORDER BY e.date ASC`,
+        periodParams,
+      );
+      res.status(200).json({ events: sanitizeEventRows(rows) });
+      return;
+    }
 
     if (role === "csg_president" && userId) {
       const [rows]: any = await pool.execute(
@@ -763,13 +997,46 @@ async getCurrentEvent(req: Request, res: Response): Promise<void> {
       return;
     }
 
+    if (isCsgCashierRole(role, departmentId)) {
+      const [rows]: any = await pool.execute(
+        `SELECT
+          e.*,
+          u.username AS created_by_username,
+          JSON_ARRAYAGG(
+            JSON_OBJECT(
+              'department_id',   ea.department_id,
+              'department_name', d.name,
+              'department_code', d.code,
+              'program_id',      ea.program_id,
+              'course_code',     p.course_code,
+              'course_name',     p.course_name,
+              'major',           NULLIF(TRIM(p.major), ''),
+              'year_level',      ea.year_level
+            )
+          ) AS audiences
+        FROM events e
+        LEFT JOIN users u            ON u.id  = e.created_by
+        LEFT JOIN event_audiences ea ON ea.event_id = e.id
+        LEFT JOIN departments d      ON d.id = ea.department_id
+        LEFT JOIN programs p         ON p.id = ea.program_id
+        WHERE ${SQL_CSG_PRESIDENT_CREATOR}
+        AND e.status IN ('Upcoming', 'Ongoing')
+        ${periodClause}
+        GROUP BY e.id
+        ORDER BY e.date ASC`,
+        periodParams,
+      );
+      res.status(200).json({ events: sanitizeEventRows(rows) });
+      return;
+    }
+
       // When logged in with a department token, only return:
       // - events marked as `is_all_departments`
       // - events that target the user's `department_id`
-      // Governors: only events they created. Admins stay department/global as before.
+      // Governors: only events they created. Dept cashiers: college audience (any creator).
       if (departmentId) {
         const filterByCreator =
-          role != null && GOVERNOR_ROLES.includes(role) && !!userId;
+          isGovernorRole(role) && !!userId;
         const creatorSql = filterByCreator ? " AND e.created_by = ?" : "";
 
         const [rows]: any = await pool.execute(
@@ -810,7 +1077,7 @@ async getCurrentEvent(req: Request, res: Response): Promise<void> {
 
       // Public (not logged in): CSG / all-departments events unchanged, plus governor-created
       // upcoming & ongoing events for the public homepage.
-      const govPlaceholders = GOVERNOR_ROLES.map(() => "?").join(", ");
+      const govPlaceholders = ALL_GOVERNOR_ROLE_VALUES.map(() => "?").join(", ");
       const [rows]: any = await pool.execute(
         `SELECT * FROM (
           (
@@ -870,7 +1137,7 @@ async getCurrentEvent(req: Request, res: Response): Promise<void> {
           )
         ) AS public_events
         ORDER BY date ASC`,
-        [...periodParams, ...GOVERNOR_ROLES, ...periodParams]
+        [...periodParams, ...ALL_GOVERNOR_ROLE_VALUES, ...periodParams]
       );
       console.log("get current events:", rows.length);
 
@@ -881,4 +1148,38 @@ async getCurrentEvent(req: Request, res: Response): Promise<void> {
     res.status(500).json({ message: "Internal server error." });
   }
 }
+
+  /** Super Admin only — reveal stored event attendance password (when recoverable). */
+  async revealAttendancePassword(req: Request, res: Response): Promise<void> {
+    if (String(req.user?.role ?? "").toLowerCase() !== "super_admin") {
+      res.status(403).json({ message: "Access denied." });
+      return;
+    }
+    const eventId = Number(req.params.id);
+    if (!Number.isFinite(eventId) || eventId <= 0) {
+      res.status(400).json({ message: "Invalid event id." });
+      return;
+    }
+    try {
+      const [rows]: any = await pool.execute(
+        `SELECT attendance_password_hash, attendance_password_encrypted
+         FROM events WHERE id = ? LIMIT 1`,
+        [eventId],
+      );
+      if (!rows.length) {
+        res.status(404).json({ message: "Event not found." });
+        return;
+      }
+      const hasPassword = Boolean(rows[0].attendance_password_hash);
+      const password = revealStoredPassword(rows[0].attendance_password_encrypted);
+      res.status(200).json({
+        hasPassword,
+        password,
+        recoverable: password != null,
+      });
+    } catch (error) {
+      console.error("[revealAttendancePassword] Error:", error);
+      res.status(500).json({ message: "Internal server error." });
+    }
+  }
 }
