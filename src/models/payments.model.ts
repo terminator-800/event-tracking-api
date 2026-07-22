@@ -42,4 +42,45 @@ export async function createPaymentsTable(): Promise<void> {
       FOREIGN KEY (academic_period_id) REFERENCES academic_periods(id) ON DELETE RESTRICT
     );
   `);
+
+  await ensureColumn(
+    `ALTER TABLE payments ADD COLUMN academic_period_id INT NULL AFTER student_id`,
+  );
+  await ensureIndex(
+    `ALTER TABLE payments ADD INDEX idx_payments_academic_period (academic_period_id)`,
+  );
+  await ensureFk(
+    `ALTER TABLE payments
+      ADD CONSTRAINT fk_payments_academic_period
+      FOREIGN KEY (academic_period_id) REFERENCES academic_periods(id) ON DELETE RESTRICT`,
+  );
+}
+
+async function ensureColumn(sql: string): Promise<void> {
+  try {
+    await pool.execute(sql);
+  } catch (err: unknown) {
+    const code = (err as { code?: string })?.code;
+    if (code !== "ER_DUP_FIELDNAME") throw err;
+  }
+}
+
+async function ensureIndex(sql: string): Promise<void> {
+  try {
+    await pool.execute(sql);
+  } catch (err: unknown) {
+    const code = (err as { code?: string })?.code;
+    if (code !== "ER_DUP_KEYNAME") throw err;
+  }
+}
+
+async function ensureFk(sql: string): Promise<void> {
+  try {
+    await pool.execute(sql);
+  } catch (err: unknown) {
+    const code = (err as { code?: string })?.code;
+    const errno = (err as { errno?: number })?.errno;
+    if (code === "ER_DUP_KEYNAME" || errno === 1826 || errno === 1005) return;
+    throw err;
+  }
 }
