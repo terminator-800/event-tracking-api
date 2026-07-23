@@ -4,11 +4,11 @@
   "description": "Node.js + Express + MySQL API setup with TypeScript",
   "main": "dist/server.js",
   "scripts": {
-    "dev": "ts-node-dev --respawn --transpile-only src/server.ts",
-    "build": "tsc",
+    "dev": "node ./node_modules/ts-node-dev/lib/bin.js --respawn --transpile-only src/server.ts",
+    "build": "node ./node_modules/typescript/bin/tsc",
     "start": "node dist/server.js",
-    "seed:admin": "ts-node src/seed/admin.seed.ts",
-    "seed:superadmin": "ts-node src/seed/superadmin.seed.ts"
+    "seed:admin": "node ./node_modules/ts-node/dist/bin.js src/seed/admin.seed.ts",
+    "seed:superadmin": "node ./node_modules/ts-node/dist/bin.js src/seed/superadmin.seed.ts"
   },
   "keywords": [],
   "author": "",
