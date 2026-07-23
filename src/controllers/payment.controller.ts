@@ -51,21 +51,54 @@ export class PaymentController {
 
       const identifier = String(req.query.identifier ?? "").trim();
       if (!identifier) {
-        res.status(400).json({ message: "identifier is required (Student ID or RFID)." });
+        res.status(400).json({ message: "identifier is required (Student ID, RFID, or name)." });
         return;
       }
 
-      const student = await paymentService.getPaymentStudentByIdentifier(
+      const byIdOrRfid = await paymentService.getPaymentStudentByIdentifier(
         role,
         departmentId,
         userId,
         identifier,
       );
-      if (!student) {
+      if (byIdOrRfid) {
+        res.status(200).json({ student: byIdOrRfid });
+        return;
+      }
+
+      // Name search when ID/RFID did not match (skip very short queries).
+      if (identifier.length < 2) {
         res.status(404).json({ message: "Student not found or access denied." });
         return;
       }
-      res.status(200).json({ student });
+
+      const matches = await paymentService.searchPaymentStudentsByName(
+        role,
+        departmentId,
+        userId,
+        identifier,
+      );
+      if (matches.length === 0) {
+        res.status(404).json({ message: "Student not found or access denied." });
+        return;
+      }
+
+      if (matches.length === 1) {
+        const student = await paymentService.getPaymentStudentByPublicId(
+          role,
+          departmentId,
+          userId,
+          matches[0].studentId,
+        );
+        if (!student) {
+          res.status(404).json({ message: "Student not found or access denied." });
+          return;
+        }
+        res.status(200).json({ student });
+        return;
+      }
+
+      res.status(200).json({ matches });
     } catch (error) {
       console.error("[PaymentController.lookup]", error);
       res.status(500).json({ message: "Internal server error." });
@@ -219,6 +252,26 @@ export class PaymentController {
       res.status(200).json(result);
     } catch (error) {
       console.error("[PaymentController.setStudentBalance]", error);
+      res.status(500).json({ message: "Internal server error." });
+    }
+  }
+
+  async deleteTransaction(req: Request, res: Response): Promise<void> {
+    try {
+      const role = req.user?.role as Role | undefined;
+      if (!role) {
+        res.status(401).json({ message: "Unauthorized" });
+        return;
+      }
+      const transactionId = Number(req.params.id);
+      const result = await paymentService.deletePaymentTransaction({ role, transactionId });
+      if (!result.ok) {
+        res.status(result.status).json({ message: result.message });
+        return;
+      }
+      res.status(200).json(result);
+    } catch (error) {
+      console.error("[PaymentController.deleteTransaction]", error);
       res.status(500).json({ message: "Internal server error." });
     }
   }
