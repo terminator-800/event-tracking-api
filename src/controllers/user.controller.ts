@@ -2,7 +2,7 @@
 
 import { Request, Response } from "express";
 import { validateRequiredFields } from '../utils/validate';
-import { createUser, deleteUserById, getAuditLogs, getSuperAdminStats, listDepartments, listUsers, updateUserById } from './services/user.service'
+import { createUser, deleteUserById, getAuditLogs, getSuperAdminStats, listDepartments, listUsers, revealUserAccountPassword, updateUserById } from './services/user.service'
 import { importStudentsCsv } from "./services/import-students-csv.service";
 
 export class UserController {
@@ -15,9 +15,9 @@ export class UserController {
       if (!validateRequiredFields({ fullName, password, role, username }, res)) return;
 
       const result = await createUser({
-        department,
+        department: department != null ? String(department) : "",
         fullName: String(fullName).trim(),
-        major,
+        major: major != null ? String(major) : "",
         password,
         role,
         username,
@@ -64,11 +64,20 @@ export class UserController {
         res.status(400).json({ message: "Invalid user id." });
         return;
       }
-      const { fullName, username, password } = req.body ?? {};
+      const { fullName, username, password, role, department } = req.body ?? {};
+      const requesterRole = String(req.user?.role ?? "").toLowerCase();
+
+      if (role !== undefined && requesterRole !== "super_admin") {
+        res.status(403).json({ message: "Only super admin can change user roles." });
+        return;
+      }
+
       const result = await updateUserById(id, {
         fullName: fullName !== undefined ? String(fullName).trim() : undefined,
         username: username ? String(username).trim() : undefined,
         password: password ? String(password) : undefined,
+        role: role !== undefined ? (String(role).trim().toLowerCase() as never) : undefined,
+        department: department !== undefined ? String(department).trim() : undefined,
       });
       if (!result.success) {
         res.status(result.status).json({ message: result.message });
@@ -116,6 +125,28 @@ export class UserController {
       res.status(200).json({ logs });
     } catch (error) {
       console.error("Error fetching audit logs:", error);
+      res.status(500).json({ message: "Internal server error." });
+    }
+  }
+
+  async revealUserPassword(req: Request, res: Response): Promise<void> {
+    try {
+      if (String(req.user?.role ?? "").toLowerCase() !== "super_admin") {
+        res.status(403).json({ message: "Access denied." });
+        return;
+      }
+      const id = Number(req.params.id);
+      const result = await revealUserAccountPassword(id);
+      if (!result.success) {
+        res.status(result.status).json({ message: result.message });
+        return;
+      }
+      res.status(200).json({
+        password: result.password ?? null,
+        recoverable: Boolean(result.recoverable),
+      });
+    } catch (error) {
+      console.error("Error revealing user password:", error);
       res.status(500).json({ message: "Internal server error." });
     }
   }

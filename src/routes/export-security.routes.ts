@@ -3,21 +3,14 @@ import { authMiddleware } from "../middlewares/auth.middleware";
 import { roleMiddleware } from "../middlewares/role.middleware";
 import { ExportSecurityController } from "../controllers/export-security.controller";
 
+import { OPERATIONAL_ROLES } from "../utils/roles";
+
 const router = Router();
 const controller = new ExportSecurityController();
 
 const CSG_ONLY = roleMiddleware("csg_president");
 
-const ALL_OPERATIONAL_ROLES = roleMiddleware(
-  "admin",
-  "super_admin",
-  "csg_president",
-  "it_governor",
-  "cba_governor",
-  "ceas_governor",
-  "coc_governor",
-  "chm_governor",
-);
+const ALL_OPERATIONAL_ROLES = roleMiddleware(...OPERATIONAL_ROLES);
 
 // CSG President management
 router.get("/export-security/settings", authMiddleware, CSG_ONLY, (req, res) => controller.getSettings(req, res));

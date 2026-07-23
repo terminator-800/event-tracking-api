@@ -7,6 +7,8 @@ import {
   isDepartmentExcludedFromImport,
   normalizeDepartmentLookupKey,
 } from "../../models/departments.model";
+import { GOVERNOR_ROLE, isGovernorRole } from "../../utils/roles";
+import { decryptValue, encryptValue } from "./export-security.service";
 
 interface RegisterPayload {
   department: string;
@@ -21,6 +23,8 @@ interface UpdateUserPayload {
   fullName?: string;
   username?: string;
   password?: string;
+  role?: Role;
+  department?: string;
 }
 
 interface FailResult {
@@ -40,14 +44,6 @@ interface ResolvedIds {
   departmentId: number | null;
   programId: number | null;
 }
-
-const GOVERNOR_ROLES: Role[] = [
-  "it_governor",
-  "cba_governor",
-  "ceas_governor",
-  "coc_governor",
-  "chm_governor",
-];
 
 // ── DB Helpers ────────────────────────────────────────────────────────────────
 
@@ -102,6 +98,35 @@ async function resolveCSGPresidentIds(): Promise<FailResult | ResolvedIds> {
   return { departmentId: null, programId: null };
 }
 
+/** Dept Cashier: department required. CSG Cashier: empty department → institution-wide. */
+async function resolveCashierIds(
+  department: string,
+  requireDepartment: boolean,
+): Promise<FailResult | ResolvedIds> {
+  const trimmed = String(department ?? "").trim();
+  if (!trimmed) {
+    if (requireDepartment) {
+      return { success: false, status: 400, message: "Dept Cashier must have a department." };
+    }
+    return { departmentId: null, programId: null };
+  }
+  const departmentId = await findDepartmentId(trimmed);
+  if (!departmentId) {
+    return { success: false, status: 404, message: "Department not found." };
+  }
+  return { departmentId, programId: null };
+}
+
+function normalizeCashierRole(
+  role: Role,
+  departmentId: number | null,
+): "csg_cashier" | "dept_cashier" {
+  if (role === "dept_cashier") return "dept_cashier";
+  if (role === "csg_cashier") return "csg_cashier";
+  // Legacy `cashier`
+  return departmentId != null ? "dept_cashier" : "csg_cashier";
+}
+
 async function resolveGovernorIds(department: string, major: string): Promise<FailResult | ResolvedIds> {
   if (!department) {
     return { success: false, status: 400, message: "Governor must have a department." };
@@ -127,23 +152,24 @@ async function insertUser(
   username: string,
   fullName: string,
   hashedPassword: string,
+  encryptedPassword: string,
   role: Role,
   studentId: number | null,
   departmentId: number | null,
   programId: number | null
 ): Promise<void> {
   await pool.execute(
-    `INSERT INTO users (username, full_name, password, role, student_id, department_id, program_id)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`,
-    [username, fullName, hashedPassword, role, studentId, departmentId, programId]
+    `INSERT INTO users (username, full_name, password, password_encrypted, role, student_id, department_id, program_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    [username, fullName, hashedPassword, encryptedPassword, role, studentId, departmentId, programId]
   );
 }
 
 // ── Main Service ──────────────────────────────────────────────────────────────
 
 export async function createUser(payload: RegisterPayload): Promise<ServiceResult> {
-  const { department, fullName, major, password, role, username } = payload;
-  const csg_president = "csg_president";
+  const { department, fullName, major, password, username } = payload;
+  let { role } = payload;
   try {
 
     if (await isUsernameTaken(username)) {
@@ -154,20 +180,29 @@ export async function createUser(payload: RegisterPayload): Promise<ServiceResul
     let programId: number | null = null;
     let studentId: number | null = null;
 
-    if (role === csg_president) {
+    if (role === "csg_president") {
       const resolved = await resolveCSGPresidentIds();
       if ("success" in resolved) return resolved;
       ({ departmentId, programId } = resolved);
 
-    } else if (GOVERNOR_ROLES.includes(role)) {
+    } else if (role === "cashier" || role === "csg_cashier" || role === "dept_cashier") {
+      const requireDepartment = role === "dept_cashier";
+      const resolved = await resolveCashierIds(department, requireDepartment);
+      if ("success" in resolved) return resolved;
+      ({ departmentId, programId } = resolved);
+      role = normalizeCashierRole(role, departmentId);
+
+    } else if (isGovernorRole(role)) {
       const resolved = await resolveGovernorIds(department, major);
       if ("success" in resolved) return resolved;
       ({ departmentId, programId } = resolved);
+      role = GOVERNOR_ROLE;
     }
 
     const hashedPassword = await bcrypt.hash(password, 10);
+    const encryptedPassword = encryptValue(password);
 
-    await insertUser(username, fullName, hashedPassword, role, studentId, departmentId, programId);
+    await insertUser(username, fullName, hashedPassword, encryptedPassword, role, studentId, departmentId, programId);
 
     return { success: true, status: 201 };
 
@@ -191,11 +226,35 @@ export async function listDepartments() {
 }
 
 export function filterUsersForRole<T extends { role?: string | null }>(users: T[], requesterRole?: Role | null): T[] {
-  if (requesterRole === "admin") {
-    return users.filter((user) => String(user.role ?? "").toLowerCase() !== "super_admin");
+  const requester = String(requesterRole ?? "")
+    .trim()
+    .toLowerCase();
+
+  if (!requester || requester === "super_admin") {
+    return users;
   }
 
-  return users;
+  const isHiddenForRequester = (rawRole: string | null | undefined): boolean => {
+    const role = String(rawRole ?? "")
+      .trim()
+      .toLowerCase();
+    if (requester === "admin") {
+      return role === "super_admin";
+    }
+    // CSG, governor (incl. legacy), cashier — hide admin and super admin accounts
+    if (
+      requester === "csg_president" ||
+      requester === "cashier" ||
+      requester === "csg_cashier" ||
+      requester === "dept_cashier" ||
+      isGovernorRole(requester)
+    ) {
+      return role === "super_admin" || role === "admin";
+    }
+    return false;
+  };
+
+  return users.filter((user) => !isHiddenForRequester(user.role));
 }
 
 export async function listUsers(requesterRole?: Role | null) {
@@ -218,14 +277,24 @@ export async function listUsers(requesterRole?: Role | null) {
   return filterUsersForRole(rows as Array<{ role?: string | null }>, requesterRole);
 }
 
+const ASSIGNABLE_ROLES: Role[] = [
+  "super_admin",
+  "admin",
+  "csg_president",
+  GOVERNOR_ROLE,
+  "cashier",
+  "csg_cashier",
+  "dept_cashier",
+];
+
 export async function updateUserById(userId: number, payload: UpdateUserPayload): Promise<ServiceResult> {
-  const { fullName, username, password } = payload;
-  if (!fullName && !username && !password) {
+  const { fullName, username, password, role: rawRole, department } = payload;
+  if (!fullName && !username && !password && rawRole === undefined) {
     return { success: false, status: 400, message: "Nothing to update." };
   }
 
   const [existingRows] = await pool.execute<RowDataPacket[]>(
-    `SELECT id FROM users WHERE id = ? LIMIT 1`,
+    `SELECT id, role, department_id FROM users WHERE id = ? LIMIT 1`,
     [userId],
   );
   if (existingRows.length === 0) {
@@ -242,8 +311,15 @@ export async function updateUserById(userId: number, payload: UpdateUserPayload)
     }
   }
 
+  const role =
+    rawRole !== undefined && isGovernorRole(rawRole) ? GOVERNOR_ROLE : rawRole;
+
+  if (role !== undefined && !ASSIGNABLE_ROLES.includes(role)) {
+    return { success: false, status: 400, message: "Invalid role." };
+  }
+
   const updates: string[] = [];
-  const values: Array<string | number> = [];
+  const values: Array<string | number | null> = [];
 
   if (fullName !== undefined) {
     updates.push("full_name = ?");
@@ -259,6 +335,69 @@ export async function updateUserById(userId: number, payload: UpdateUserPayload)
     const hashedPassword = await bcrypt.hash(password, 10);
     updates.push("password = ?");
     values.push(hashedPassword);
+    updates.push("password_encrypted = ?");
+    values.push(encryptValue(password));
+  }
+
+  if (role !== undefined) {
+    let departmentId: number | null = null;
+    let programId: number | null = null;
+    let nextRole: Role = role;
+
+    if (role === "csg_president") {
+      const resolved = await resolveCSGPresidentIds();
+      if ("success" in resolved) return resolved;
+      ({ departmentId, programId } = resolved);
+    } else if (role === "cashier" || role === "csg_cashier" || role === "dept_cashier") {
+      if (department !== undefined) {
+        const resolved = await resolveCashierIds(department ?? "", role === "dept_cashier");
+        if ("success" in resolved) return resolved;
+        ({ departmentId, programId } = resolved);
+      } else {
+        const existingDept = existingRows[0].department_id;
+        departmentId = existingDept != null ? Number(existingDept) : null;
+        programId = null;
+        if (role === "dept_cashier" && departmentId == null) {
+          return {
+            success: false,
+            status: 400,
+            message: "Dept Cashier must have a department. Select a college for this user.",
+          };
+        }
+        if (role === "csg_cashier") {
+          departmentId = null;
+        }
+      }
+      nextRole = normalizeCashierRole(role, departmentId);
+    } else if (isGovernorRole(role)) {
+      if (department?.trim()) {
+        const resolved = await resolveGovernorIds(department, "");
+        if ("success" in resolved) return resolved;
+        ({ departmentId, programId } = resolved);
+      } else {
+        const existingDept = existingRows[0].department_id;
+        departmentId = existingDept != null ? Number(existingDept) : null;
+        if (departmentId == null) {
+          return {
+            success: false,
+            status: 400,
+            message: "Governor must have a department. Select a college for this user.",
+          };
+        }
+        programId = null;
+      }
+      nextRole = GOVERNOR_ROLE;
+    } else {
+      departmentId = null;
+      programId = null;
+    }
+
+    updates.push("role = ?");
+    values.push(nextRole);
+    updates.push("department_id = ?");
+    values.push(departmentId);
+    updates.push("program_id = ?");
+    values.push(programId);
   }
 
   values.push(userId);
@@ -282,7 +421,7 @@ export async function getSuperAdminStats() {
       SUM(role = 'admin') AS total_admins,
       SUM(role = 'super_admin') AS total_super_admins,
       SUM(role = 'csg_president') AS total_csg_presidents,
-      SUM(role IN ('it_governor','cba_governor','ceas_governor','coc_governor','chm_governor')) AS total_governors
+      SUM(role IN ('governor','it_governor','cba_governor','ceas_governor','coc_governor','chm_governor')) AS total_governors
     FROM users
   `);
 
@@ -348,4 +487,38 @@ export async function getAuditLogs() {
     .slice(0, 100);
 
   return combined;
+}
+
+/** Super Admin only — reveal recoverable account password when encrypted copy exists. */
+export async function revealUserAccountPassword(userId: number): Promise<{
+  success: boolean;
+  status: number;
+  message?: string;
+  password?: string | null;
+  recoverable?: boolean;
+}> {
+  if (!Number.isFinite(userId) || userId <= 0) {
+    return { success: false, status: 400, message: "Invalid user id." };
+  }
+  const [rows] = await pool.execute<RowDataPacket[]>(
+    `SELECT password_encrypted FROM users WHERE id = ? LIMIT 1`,
+    [userId],
+  );
+  if (!rows.length) {
+    return { success: false, status: 404, message: "User not found." };
+  }
+  const encrypted = rows[0].password_encrypted;
+  if (!encrypted) {
+    return { success: true, status: 200, password: null, recoverable: false };
+  }
+  try {
+    return {
+      success: true,
+      status: 200,
+      password: decryptValue(String(encrypted)),
+      recoverable: true,
+    };
+  } catch {
+    return { success: true, status: 200, password: null, recoverable: false };
+  }
 }
