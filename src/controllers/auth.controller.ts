@@ -1,6 +1,13 @@
 import { Request, Response } from "express";
 import { validateRequiredFields } from '../utils/validate'
-import { verifyUserCredentials, generateAuthToken, setAuthCookie, generateDepartmentToken } from './services/auth.service'
+import {
+  verifyUserCredentials,
+  generateAuthToken,
+  setAuthCookie,
+  generateDepartmentToken,
+  changeOwnPassword,
+  MIN_ACCOUNT_PASSWORD_LENGTH,
+} from './services/auth.service'
 import { getActiveAcademicPeriod } from "./services/academic-period.service";
 import { pool } from '../config/db';
 
@@ -168,6 +175,48 @@ async departmentMe(req: Request, res: Response): Promise<void> {
     res.status(200).json({ department: rows[0] });
   } catch (error) {
     console.error("Error in departmentMe:", error);
+    res.status(500).json({ message: "Internal server error." });
+  }
+}
+
+async changePassword(req: Request, res: Response): Promise<void> {
+  try {
+    const userId = req.user?.id;
+    if (!userId) {
+      res.status(401).json({ message: "Unauthorized" });
+      return;
+    }
+
+    const currentPassword = String(req.body?.currentPassword ?? req.body?.current_password ?? "");
+    const newPassword = String(req.body?.newPassword ?? req.body?.new_password ?? "").trim();
+    const confirmPassword = String(
+      req.body?.confirmPassword ?? req.body?.confirm_password ?? newPassword,
+    ).trim();
+
+    if (!currentPassword || !newPassword) {
+      res.status(400).json({ message: "Current password and new password are required." });
+      return;
+    }
+    if (newPassword.length < MIN_ACCOUNT_PASSWORD_LENGTH) {
+      res.status(400).json({
+        message: `New password must be at least ${MIN_ACCOUNT_PASSWORD_LENGTH} characters.`,
+      });
+      return;
+    }
+    if (newPassword !== confirmPassword) {
+      res.status(400).json({ message: "New password and confirmation do not match." });
+      return;
+    }
+
+    const result = await changeOwnPassword(Number(userId), currentPassword, newPassword);
+    if (!result.ok) {
+      res.status(result.status).json({ message: result.message });
+      return;
+    }
+
+    res.status(200).json({ message: "Password updated successfully." });
+  } catch (error) {
+    console.error("Error in changePassword:", error);
     res.status(500).json({ message: "Internal server error." });
   }
 }
