@@ -16,10 +16,28 @@ function normalizeTime(value: string | undefined): string | null {
 }
 
 function getRealManilaDateTime(): { currentDate: string; currentTime: string } {
-  const now = new Date();
-  const manilaLocale = now.toLocaleString("en-CA", { timeZone: "Asia/Manila", hour12: false });
-  const [currentDate, currentTime] = manilaLocale.split(", ");
-  return { currentDate, currentTime };
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Manila",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  }).formatToParts(new Date());
+
+  const get = (type: Intl.DateTimeFormatPartTypes) =>
+    parts.find((p) => p.type === type)?.value ?? "00";
+
+  const hourRaw = get("hour");
+  // Some engines emit "24" for midnight under hour12:false — normalize to 00.
+  const hour = hourRaw === "24" ? "00" : hourRaw.padStart(2, "0");
+
+  return {
+    currentDate: `${get("year")}-${get("month")}-${get("day")}`,
+    currentTime: `${hour}:${get("minute").padStart(2, "0")}:${get("second").padStart(2, "0")}`,
+  };
 }
 
 /**

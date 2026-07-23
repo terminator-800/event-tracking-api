@@ -1,8 +1,29 @@
 import { RowDataPacket } from "mysql2";
 import { pool } from "../config/db";
+import { sqlCsgPresidentCreator } from "../utils/roles";
 import { SQL_STUDENT_FULL_NAME, SQL_STUDENT_YEAR_LEVEL } from "../utils/studentDisplaySql";
 import { sqlLatestEnrollmentLeftJoin } from "../utils/studentEligibilitySql";
 import { getActiveAcademicPeriod } from "./academic-periods.repository";
+
+export type StudentDashboardCreatorScope = {
+  /** Single creator (CSG president / governor own events). */
+  createdByUserId?: number | null;
+  /** CSG Cashier: all events created by any CSG president. */
+  csgPresidentCreatorsOnly?: boolean;
+};
+
+function eventCreatorSqlAndParams(scope: StudentDashboardCreatorScope = {}): {
+  sql: string;
+  params: number[];
+} {
+  if (scope.csgPresidentCreatorsOnly) {
+    return { sql: ` AND ${sqlCsgPresidentCreator("ev")} `, params: [] };
+  }
+  if (scope.createdByUserId != null) {
+    return { sql: " AND ev.created_by = ? ", params: [scope.createdByUserId] };
+  }
+  return { sql: "", params: [] };
+}
 
 export interface StudentListRow extends RowDataPacket {
   student_pk: number;
@@ -18,23 +39,26 @@ export interface StudentListRow extends RowDataPacket {
 }
 
 /** Latest enrollment per student + program + stats vs completed eligible events.
- * When {@link createdByUserId} is set, only counts events that user created (`events.created_by`).
+ * Creator scope limits which completed events count toward attendance stats.
  * Scoped to the active academic period roster and events. */
 export async function findStudentsWithAttendanceStats(
   departmentId: number | null,
-  createdByUserId: number | null = null,
+  creatorScope: StudentDashboardCreatorScope | number | null = null,
 ): Promise<StudentListRow[]> {
   const activePeriod = await getActiveAcademicPeriod();
   const academicPeriodId = activePeriod?.id ?? null;
   if (academicPeriodId == null) return [];
 
+  const scope: StudentDashboardCreatorScope =
+    typeof creatorScope === "number" || creatorScope == null
+      ? { createdByUserId: creatorScope }
+      : creatorScope;
+
   const deptClause = departmentId == null ? "en.id IS NOT NULL" : "en.id IS NOT NULL AND p.department_id = ?";
-  const eventCreatorClause =
-    createdByUserId != null ? " AND ev.created_by = ? " : "";
+  const { sql: eventCreatorClause, params: creatorParams } = eventCreatorSqlAndParams(scope);
   const enrollmentJoin = sqlLatestEnrollmentLeftJoin(academicPeriodId);
 
-  const params: (string | number)[] = [academicPeriodId];
-  if (createdByUserId != null) params.push(createdByUserId);
+  const params: (string | number)[] = [academicPeriodId, ...creatorParams];
   if (departmentId != null) params.push(departmentId);
 
   const [rows] = await pool.execute<StudentListRow[]>(
@@ -210,29 +234,35 @@ export interface EventHistoryDbRow extends RowDataPacket {
   name: string;
   date: string;
   duration: string;
+  event_mode: string | null;
   am_time_in: string | null;
   am_time_out: string | null;
   pm_time_in: string | null;
   pm_time_out: string | null;
   attended: number;
   fine_php: string | null;
+  fine_paid_php?: string | null;
+  fine_waived_php?: string | null;
 }
 
 export async function findCompletedEventsForStudent(
   studentPk: number,
   enrollmentProgramId: number,
   enrollmentYearLevel: number,
-  createdByUserId: number | null = null,
+  creatorScope: StudentDashboardCreatorScope | number | null = null,
 ): Promise<EventHistoryDbRow[]> {
   const activePeriod = await getActiveAcademicPeriod();
   const academicPeriodId = activePeriod?.id ?? null;
   if (academicPeriodId == null) return [];
 
-  const creatorClause =
-    createdByUserId != null ? " AND ev.created_by = ? " : "";
+  const scope: StudentDashboardCreatorScope =
+    typeof creatorScope === "number" || creatorScope == null
+      ? { createdByUserId: creatorScope }
+      : creatorScope;
 
-  const params: (string | number | null)[] = [studentPk, studentPk];
-  if (createdByUserId != null) params.push(createdByUserId);
+  const { sql: creatorClause, params: creatorParams } = eventCreatorSqlAndParams(scope);
+
+  const params: (string | number | null)[] = [studentPk, studentPk, studentPk, studentPk, ...creatorParams];
   params.push(
     academicPeriodId,
     enrollmentYearLevel,
@@ -255,6 +285,7 @@ export async function findCompletedEventsForStudent(
       ev.name AS name,
       DATE_FORMAT(ev.date, '%Y-%m-%d') AS date,
       ev.duration AS duration,
+      ev.event_mode AS event_mode,
       att.am_time_in,
       att.am_time_out,
       att.pm_time_in,
@@ -267,7 +298,44 @@ export async function findCompletedEventsForStudent(
         SELECT COALESCE(SUM(f.amount), 0)
         FROM fines f
         WHERE f.student_id = ? AND f.event_id = ev.id
-      ) AS fine_php
+          AND (
+            UPPER(TRIM(COALESCE(ev.event_mode, 'TIME_IN_OUT'))) <> 'TIME_IN_ONLY'
+            OR f.reason NOT IN (
+              'Absent AM Time Out',
+              'Missed AM Time Out',
+              'Absent PM Time Out',
+              'Missed PM Time Out'
+            )
+          )
+      ) AS fine_php,
+      (
+        SELECT COALESCE(SUM(f.paid_amount), 0)
+        FROM fines f
+        WHERE f.student_id = ? AND f.event_id = ev.id
+          AND (
+            UPPER(TRIM(COALESCE(ev.event_mode, 'TIME_IN_OUT'))) <> 'TIME_IN_ONLY'
+            OR f.reason NOT IN (
+              'Absent AM Time Out',
+              'Missed AM Time Out',
+              'Absent PM Time Out',
+              'Missed PM Time Out'
+            )
+          )
+      ) AS fine_paid_php,
+      (
+        SELECT COALESCE(SUM(CASE WHEN f.status = 'Waived' THEN GREATEST(f.amount - f.paid_amount, 0) ELSE 0 END), 0)
+        FROM fines f
+        WHERE f.student_id = ? AND f.event_id = ev.id
+          AND (
+            UPPER(TRIM(COALESCE(ev.event_mode, 'TIME_IN_OUT'))) <> 'TIME_IN_ONLY'
+            OR f.reason NOT IN (
+              'Absent AM Time Out',
+              'Missed AM Time Out',
+              'Absent PM Time Out',
+              'Missed PM Time Out'
+            )
+          )
+      ) AS fine_waived_php
     FROM events ev
     LEFT JOIN attendance att ON att.event_id = ev.id AND att.student_id = ?
     WHERE ev.status = 'Completed'
