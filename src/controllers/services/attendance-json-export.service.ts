@@ -1,4 +1,5 @@
 import type { ResultSetHeader, RowDataPacket } from "mysql2";
+import type { PoolConnection } from "mysql2/promise";
 import { pool } from "../../config/db";
 import { newEventUuid } from "../../models/events.model";
 import {
@@ -6,6 +7,10 @@ import {
   type EventStudentRow,
 } from "../../repositories/attendance-page.repository";
 import { getActiveAcademicPeriod } from "../../repositories/academic-periods.repository";
+import {
+  eventHasFinesGenerated,
+  reconcileStaleAbsenceFines,
+} from "../../repositories/fines.repository";
 
 export const ATTENDANCE_JSON_FORMAT = "NMCI-ATTENDANCE";
 export const ATTENDANCE_JSON_VERSION = 1;
@@ -338,6 +343,7 @@ export type AttendanceImportResult = {
   updated?: number;
   skipped?: number;
   unmatched?: number;
+  staleFinesRemoved?: number;
   preview?: AttendanceImportPreview;
 };
 
@@ -411,10 +417,13 @@ export async function previewAttendanceJsonImport(
   };
 }
 
-async function resolveStudentPk(record: AttendanceJsonRecord): Promise<number | null> {
+async function resolveStudentPk(
+  record: AttendanceJsonRecord,
+  conn: PoolConnection,
+): Promise<number | null> {
   const sid = String(record.student_id ?? "").trim();
   if (sid) {
-    const [byId] = await pool.execute<RowDataPacket[]>(
+    const [byId] = await conn.execute<RowDataPacket[]>(
       `SELECT id FROM students WHERE student_id = ? LIMIT 1`,
       [sid],
     );
@@ -422,7 +431,7 @@ async function resolveStudentPk(record: AttendanceJsonRecord): Promise<number | 
   }
   const rfid = String(record.rfid ?? "").trim();
   if (rfid) {
-    const [byRfid] = await pool.execute<RowDataPacket[]>(
+    const [byRfid] = await conn.execute<RowDataPacket[]>(
       `SELECT id FROM students WHERE rfid = ? LIMIT 1`,
       [rfid],
     );
@@ -516,80 +525,103 @@ export async function importAttendanceJson(opts: {
   let updated = 0;
   let skipped = 0;
   let unmatched = 0;
+  let staleFinesRemoved = 0;
 
-  for (const record of opts.pkg.attendance) {
-    const studentPk = await resolveStudentPk(record);
-    if (studentPk == null) {
-      unmatched++;
-      continue;
-    }
+  const conn = await pool.getConnection();
+  try {
+    await conn.beginTransaction();
 
-    const times = mapTimesForDuration(master.duration, record);
-    const hasAnyTime = Boolean(
-      times.am_time_in || times.am_time_out || times.pm_time_in || times.pm_time_out,
-    );
-    // Absent-only rows with no times: skip insert (roster remains local).
-    if (!hasAnyTime) {
-      skipped++;
-      continue;
-    }
+    for (const record of opts.pkg.attendance) {
+      const studentPk = await resolveStudentPk(record, conn);
+      if (studentPk == null) {
+        unmatched++;
+        continue;
+      }
 
-    const [existing] = await pool.execute<RowDataPacket[]>(
-      `SELECT id, am_time_in, am_time_out, pm_time_in, pm_time_out
-       FROM attendance WHERE student_id = ? AND event_id = ? LIMIT 1`,
-      [studentPk, master.id],
-    );
-
-    if (existing.length > 0) {
-      if (action === "skip") {
+      const times = mapTimesForDuration(master.duration, record);
+      const hasAnyTime = Boolean(
+        times.am_time_in || times.am_time_out || times.pm_time_in || times.pm_time_out,
+      );
+      // Absent-only rows with no times: skip insert (roster remains local).
+      if (!hasAnyTime) {
         skipped++;
         continue;
       }
-      await pool.execute(
-        `UPDATE attendance
-         SET am_time_in = COALESCE(?, am_time_in),
-             am_time_out = COALESCE(?, am_time_out),
-             pm_time_in = COALESCE(?, pm_time_in),
-             pm_time_out = COALESCE(?, pm_time_out)
-         WHERE id = ?`,
+
+      const [existing] = await conn.execute<RowDataPacket[]>(
+        `SELECT id, am_time_in, am_time_out, pm_time_in, pm_time_out
+         FROM attendance WHERE student_id = ? AND event_id = ? LIMIT 1`,
+        [studentPk, master.id],
+      );
+
+      if (existing.length > 0) {
+        if (action === "skip") {
+          skipped++;
+          continue;
+        }
+        await conn.execute(
+          `UPDATE attendance
+           SET am_time_in = COALESCE(?, am_time_in),
+               am_time_out = COALESCE(?, am_time_out),
+               pm_time_in = COALESCE(?, pm_time_in),
+               pm_time_out = COALESCE(?, pm_time_out)
+           WHERE id = ?`,
+          [
+            times.am_time_in,
+            times.am_time_out,
+            times.pm_time_in,
+            times.pm_time_out,
+            existing[0].id,
+          ],
+        );
+        updated++;
+        continue;
+      }
+
+      await conn.execute<ResultSetHeader>(
+        `INSERT INTO attendance
+           (student_id, event_id, academic_period_id, am_time_in, am_time_out, pm_time_in, pm_time_out)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
         [
+          studentPk,
+          master.id,
+          academicPeriodId,
           times.am_time_in,
           times.am_time_out,
           times.pm_time_in,
           times.pm_time_out,
-          existing[0].id,
         ],
       );
-      updated++;
-      continue;
+      created++;
     }
 
-    await pool.execute<ResultSetHeader>(
-      `INSERT INTO attendance
-         (student_id, event_id, academic_period_id, am_time_in, am_time_out, pm_time_in, pm_time_out)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      [
-        studentPk,
-        master.id,
-        academicPeriodId,
-        times.am_time_in,
-        times.am_time_out,
-        times.pm_time_in,
-        times.pm_time_out,
-      ],
-    );
-    created++;
+    if (created + updated > 0 && (await eventHasFinesGenerated(master.id, conn))) {
+      staleFinesRemoved = await reconcileStaleAbsenceFines(master.id, conn);
+    }
+
+    await conn.commit();
+  } catch (err) {
+    await conn.rollback();
+    throw err;
+  } finally {
+    conn.release();
   }
 
   const dept = opts.pkg.department.code;
+  let message = `Merged ${dept} attendance into "${master.name}". Created ${created}, updated ${updated}, skipped ${skipped}, unmatched ${unmatched}.`;
+  if (staleFinesRemoved > 0) {
+    message += ` Removed ${staleFinesRemoved} stale absence fine${staleFinesRemoved === 1 ? "" : "s"}.`;
+  }
+
   return {
     success: true,
-    message: `Merged ${dept} attendance into "${master.name}". Created ${created}, updated ${updated}, skipped ${skipped}, unmatched ${unmatched}.`,
+    message,
     eventId: master.id,
     created,
     updated,
     skipped,
     unmatched,
+    staleFinesRemoved,
     preview,
   };
 }
